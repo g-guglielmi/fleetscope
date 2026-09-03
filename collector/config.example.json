@@ -3,13 +3,13 @@
   "token": "PASTE-ENROLLMENT-TOKEN-HERE",
   "client": "ACME Corp",
   "site": "Milan DC1",
-  "collect": {
-    "controllers": true,
-    "vdas": true,
-    "storefront": true,
-    "license": true,
-    "localCertificates": true
+
+  "citrix": {
+    "deliveryControllers": ["ddc01.acme.local", "ddc02.acme.local"]
   },
+  "storefrontServers": ["sf01.acme.local"],
+  "licenseServers": ["lic01.acme.local"],
+
   "netscalers": [
     {
       "host": "https://ns01.acme.local",
@@ -17,6 +17,5 @@
       "passwordEnv": "FS_NS01_PW",
       "skipCertificateCheck": false
     }
-  ],
-  "hypervisors": []
+  ]
 }

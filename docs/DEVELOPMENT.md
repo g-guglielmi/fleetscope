@@ -48,13 +48,35 @@ no separate frontend server in production.
    seeded CitrixBleed advisory). A second probe enrolled with the same token adds a
    new site under ACME automatically.
 
-To run a probe against a real farm: fill `collector/config.json` (from
-`config.example.json`) with `dashboardUrl`, the enrollment `token`, and the
-`client`/`site` names, then:
+## Collector (management VM, remote mode)
+
+One probe per site runs on a **management VM** as a **domain service account** and
+reaches everything remotely — nothing is network-scanned:
+
+- **Controllers / VDAs / hypervisor connections** — Citrix **Remote PowerShell SDK**
+  pointed at a DDC (`-AdminAddress`); enumerates the whole site.
+- **StoreFront** (version, OS, IIS certs) — PowerShell Remoting (WinRM) per server.
+- **License** pools — remote CIM (WinRM) per server.
+- **NetScaler** — NITRO REST with its own credentials.
+
+Prerequisites on the management VM / account:
+- Install the free **Citrix Remote PowerShell SDK**.
+- The service account needs Citrix **Read Only Administrator** (delegated admin) and
+  **WinRM/CIM** rights on the StoreFront and license servers. A **gMSA** is ideal.
+
+Configure `collector/config.json` (from `config.example.json`): `dashboardUrl`, the
+enrollment `token`, `client`/`site`, the `citrix.deliveryControllers`,
+`storefrontServers`, `licenseServers`, and any `netscalers`. Then install:
+```powershell
+.\collector\Install-Collector.ps1 -ServiceAccount 'CONTOSO\svc-fleetscope$'
+```
+or run once by hand:
 ```powershell
 Import-Module .\collector\FleetScopeCollector.psm1
 Invoke-FleetScopeCollection -ConfigPath .\collector\config.json
 ```
+Unreachable or misconfigured targets log a WARN and are skipped; the probe still
+pushes what it could collect.
 
 ## Advisories: curated + NVD
 - A daily job (`FS_NVD_SYNC_HOUR`) pulls Citrix CVEs from the NVD API into
