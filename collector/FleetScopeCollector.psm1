@@ -17,6 +17,19 @@ function Write-CollectorLog {
     Write-Host ("{0} [{1}] {2}" -f (Get-Date -Format s), $Level, $Message)
 }
 
+function Test-FileWritable {
+    # True if the current account can open the file for writing.
+    param([string]$Path)
+    try {
+        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+        $fs.Close()
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 # ----------------------------------------------------------------------------
 # Individual collectors — each returns objects matching the ingest contract.
 # ----------------------------------------------------------------------------
@@ -220,10 +233,25 @@ function Invoke-FleetScopeCollection {
 
     # First push enrolls this probe: swap the temporary enrollment token for the
     # permanent per-probe token the server returns, persisting it to the config.
+    # If we cannot save it, the probe keeps re-enrolling and will start failing
+    # once the enrollment token expires or is revoked -- so make that loud.
     if ($resp -and $resp.collectorToken) {
-        $cfg.token = $resp.collectorToken
-        $cfg | ConvertTo-Json -Depth 10 | Set-Content -Path $ConfigPath -Encoding UTF8
-        Write-CollectorLog "Enrolled: saved permanent probe token to $ConfigPath"
+        $warn = ("Enrolled but the permanent probe token could NOT be saved to '{0}'. " +
+            "This probe will keep re-enrolling and will FAIL once the enrollment token " +
+            "expires or is revoked. Grant the scheduled task's account (default: SYSTEM) " +
+            "write access to the config, or move it to a writable location." -f $ConfigPath)
+
+        if (-not (Test-FileWritable -Path $ConfigPath)) {
+            Write-CollectorLog $warn 'ERROR'
+        } else {
+            try {
+                $cfg.token = $resp.collectorToken
+                $cfg | ConvertTo-Json -Depth 10 | Set-Content -Path $ConfigPath -Encoding UTF8 -ErrorAction Stop
+                Write-CollectorLog "Enrolled: saved permanent probe token to $ConfigPath"
+            } catch {
+                Write-CollectorLog ("$warn Underlying error: $_") 'ERROR'
+            }
+        }
     }
 }
 
