@@ -22,11 +22,12 @@ docker rm -f fs-app 2>/dev/null || true
 docker run -d --name fs-app --restart unless-stopped \
   -p "${APP_PORT:-8080}:8000" \
   -v "$DATA_DIR:/data" \
+  -e TZ="${TZ:-Europe/Rome}" \
   -e FS_DATABASE_URL="sqlite:////data/fleetscope.db" \
   -e FS_JWT_SECRET="$FS_JWT_SECRET" \
   -e FS_ADMIN_EMAIL="$FS_ADMIN_EMAIL" \
   -e FS_ADMIN_PASSWORD="$FS_ADMIN_PASSWORD" \
-  -e FS_INGEST_KEY="$FS_INGEST_KEY" \
+  -e FS_ENROLLMENT_TTL_HOURS="${FS_ENROLLMENT_TTL_HOURS:-24}" \
   -e FS_NVD_SYNC_ENABLED="${FS_NVD_SYNC_ENABLED:-true}" \
   -e FS_NVD_API_KEY="${FS_NVD_API_KEY:-}" \
   -e FS_SMTP_HOST="${FS_SMTP_HOST:-}" \

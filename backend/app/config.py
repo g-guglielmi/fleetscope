@@ -12,9 +12,8 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 720
 
-    # Shared ingest key — every probe uses this to push; probes self-declare their
-    # client/site, which are auto-provisioned. Empty = ingest disabled.
-    ingest_key: str = ""
+    # Default lifetime for dashboard-generated enrollment tokens.
+    enrollment_ttl_hours: int = 24
 
     # Bootstrap admin (created on first startup if no users exist)
     admin_email: str = "admin@local"

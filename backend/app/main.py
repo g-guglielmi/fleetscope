@@ -18,7 +18,10 @@ from .services.alerts import send_digest
 from .services.nvd import sync_once
 
 logging.basicConfig(level=logging.INFO)
-scheduler = BackgroundScheduler(timezone="UTC")
+# Honor the standard Docker TZ variable (e.g. Europe/Rome) so the daily NVD sync
+# and email digest fire at the configured local hour. APScheduler resolves the
+# name via pytz. Falls back to UTC.
+scheduler = BackgroundScheduler(timezone=os.environ.get("TZ", "UTC"))
 
 
 @asynccontextmanager

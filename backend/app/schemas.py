@@ -34,7 +34,7 @@ class LicenseIn(BaseModel):
 
 class IngestPayload(BaseModel):
     collectorVersion: str | None = None
-    client: str = Field(min_length=1)  # client display name; slug auto-derived
+    client: str | None = None          # informational; the token binds the client
     site: str = Field(min_length=1)    # site display name; slug auto-derived
     probe: str | None = None           # probe identity (e.g. hostname)
     collectedAt: datetime
@@ -50,6 +50,10 @@ class IngestResult(BaseModel):
     certificates: int
     licenses: int
     findings: int
+    # Present only on the enrollment push: the probe's permanent token to save
+    # and use for all subsequent pushes. The enrollment token can then expire.
+    collectorToken: str | None = None
+    enrolled: bool = False
 
 
 # ---- Auth ----

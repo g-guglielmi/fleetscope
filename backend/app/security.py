@@ -1,4 +1,6 @@
+import hashlib
 import re
+import secrets
 import unicodedata
 from datetime import datetime, timedelta, timezone
 
@@ -6,6 +8,15 @@ import bcrypt
 import jwt
 
 from .config import settings
+
+
+# ---- Opaque tokens (enrollment + per-probe), stored only as a hash ----
+def generate_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 # ---- User passwords (bcrypt directly; passlib is unmaintained) ----

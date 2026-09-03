@@ -1,6 +1,6 @@
 {
   "dashboardUrl": "https://fleetscope.example.com",
-  "ingestKey": "PASTE-SHARED-INGEST-KEY-HERE",
+  "token": "PASTE-ENROLLMENT-TOKEN-HERE",
   "client": "ACME Corp",
   "site": "Milan DC1",
   "collect": {

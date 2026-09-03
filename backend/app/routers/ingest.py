@@ -1,14 +1,15 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
+from ..deps import bearer_token
 from ..db import get_db
-from ..deps import verify_ingest_key
 from ..models import (
     Certificate,
     Client,
     Collector,
     Component,
+    EnrollmentToken,
     License,
     Site,
     Snapshot,
@@ -16,20 +17,10 @@ from ..models import (
     utcnow,
 )
 from ..schemas import IngestPayload, IngestResult
-from ..security import slugify
+from ..security import generate_token, hash_token, slugify
 from ..services.enrichment import rematch_site
 
 router = APIRouter(prefix="/api", tags=["ingest"])
-
-
-def _get_or_create_client(db: Session, name: str) -> Client:
-    slug = slugify(name)
-    client = db.scalar(select(Client).where(Client.slug == slug))
-    if client is None:
-        client = Client(slug=slug, name=name)
-        db.add(client)
-        db.flush()
-    return client
 
 
 def _get_or_create_site(db: Session, client: Client, name: str) -> Site:
@@ -42,25 +33,53 @@ def _get_or_create_site(db: Session, client: Client, name: str) -> Site:
     return site
 
 
-def _get_or_create_collector(db: Session, site: Site, name: str) -> Collector:
-    collector = db.scalar(select(Collector).where(Collector.site_id == site.id, Collector.name == name))
-    if collector is None:
-        collector = Collector(site_id=site.id, name=name)
-        db.add(collector)
-        db.flush()
-    return collector
+def _authenticate(db: Session, token: str, payload: IngestPayload) -> tuple[Collector, str | None]:
+    """Resolve the pushing probe.
 
+    - A known per-probe token -> that collector (scoped to its site).
+    - Otherwise a valid enrollment token -> create the site+collector under the
+      token's client, mint a permanent probe token, and return it once.
+    """
+    token_hash = hash_token(token)
 
-@router.post("/ingest", response_model=IngestResult, dependencies=[Depends(verify_ingest_key)])
-def ingest(payload: IngestPayload, db: Session = Depends(get_db)) -> IngestResult:
-    # Self-registration: the probe declares its client/site; we auto-provision so
-    # the Overview grows a new section automatically. No pre-enrollment needed.
-    client = _get_or_create_client(db, payload.client)
+    collector = db.scalar(select(Collector).where(Collector.token_hash == token_hash))
+    if collector is not None:
+        return collector, None
+
+    enrollment = db.scalar(select(EnrollmentToken).where(EnrollmentToken.token_hash == token_hash))
+    if enrollment is None or not enrollment.is_valid(utcnow()):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
+
+    client = db.get(Client, enrollment.client_id)
+    if client is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Enrollment token's client no longer exists")
+
     site = _get_or_create_site(db, client, payload.site)
-    collector = _get_or_create_collector(db, site, payload.probe or f"{site.slug}-collector")
+    probe_name = payload.probe or f"{site.slug}-collector"
+
+    collector = db.scalar(select(Collector).where(Collector.site_id == site.id, Collector.name == probe_name))
+    if collector is None:
+        collector = Collector(site_id=site.id, name=probe_name)
+        db.add(collector)
+
+    new_token = generate_token()
+    collector.token_hash = hash_token(new_token)
+    enrollment.last_used_at = utcnow()
+    db.flush()
+    return collector, new_token
+
+
+@router.post("/ingest", response_model=IngestResult)
+def ingest(
+    payload: IngestPayload,
+    authorization: str | None = Header(default=None),
+    db: Session = Depends(get_db),
+) -> IngestResult:
+    collector, new_token = _authenticate(db, bearer_token(authorization), payload)
+    site_id = collector.site_id
 
     snapshot = Snapshot(
-        site_id=site.id,
+        site_id=site_id,
         collector_id=collector.id,
         collected_at=naive_utc(payload.collectedAt),
         raw=payload.model_dump(mode="json"),
@@ -68,30 +87,30 @@ def ingest(payload: IngestPayload, db: Session = Depends(get_db)) -> IngestResul
     db.add(snapshot)
 
     # Replace derived state for this site (latest-wins).
-    db.execute(delete(Component).where(Component.site_id == site.id))
-    db.execute(delete(Certificate).where(Certificate.site_id == site.id))
-    db.execute(delete(License).where(License.site_id == site.id))
+    db.execute(delete(Component).where(Component.site_id == site_id))
+    db.execute(delete(Certificate).where(Certificate.site_id == site_id))
+    db.execute(delete(License).where(License.site_id == site_id))
 
     for c in payload.components:
         db.add(Component(
-            site_id=site.id, type=c.type, hostname=c.hostname, product=c.product,
+            site_id=site_id, type=c.type, hostname=c.hostname, product=c.product,
             version=c.version, build=c.build, os_version=c.osVersion, extra=c.extra,
         ))
     for cert in payload.certificates:
         db.add(Certificate(
-            site_id=site.id, source=cert.source, hostname=cert.hostname,
+            site_id=site_id, source=cert.source, hostname=cert.hostname,
             subject=cert.subject, issuer=cert.issuer, not_after=naive_utc(cert.notAfter),
             thumbprint=cert.thumbprint,
         ))
     for lic in payload.licenses:
         db.add(License(
-            site_id=site.id, product=lic.product, edition=lic.edition, model=lic.model,
+            site_id=site_id, product=lic.product, edition=lic.edition, model=lic.model,
             count=lic.count, subscription_advantage_date=naive_utc(lic.subscriptionAdvantageDate),
             expires=naive_utc(lic.expires),
         ))
 
     db.flush()  # assign component ids before matching
-    findings = rematch_site(db, site.id)
+    findings = rematch_site(db, site_id)
 
     collector.last_seen = utcnow()
     collector.last_collector_version = payload.collectorVersion
@@ -103,4 +122,6 @@ def ingest(payload: IngestPayload, db: Session = Depends(get_db)) -> IngestResul
         certificates=len(payload.certificates),
         licenses=len(payload.licenses),
         findings=findings,
+        collectorToken=new_token,
+        enrolled=new_token is not None,
     )

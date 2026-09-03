@@ -62,15 +62,34 @@ class Site(Base):
 
 
 class Collector(Base):
-    """A probe. Self-registers on first push (no pre-enrollment)."""
+    """A probe. Enrolls with a temporary token, then gets its own permanent one."""
     __tablename__ = "collectors"
     __table_args__ = (UniqueConstraint("site_id", "name", name="uq_collector_site_name"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     site_id: Mapped[int] = mapped_column(ForeignKey("sites.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(255))
+    token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
     last_seen: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_collector_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class EnrollmentToken(Base):
+    """A temporary, time-boxed token bound to one client. Probes present it on
+    first push; the server then issues each probe its own permanent token.
+    Reusable within its window (to enroll several of a client's probes)."""
+    __tablename__ = "enrollment_tokens"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime)
+    revoked: Mapped[bool] = mapped_column(default=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    def is_valid(self, now: datetime) -> bool:
+        return not self.revoked and self.expires_at > now
 
 
 class Snapshot(Base):

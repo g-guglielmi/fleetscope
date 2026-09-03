@@ -12,7 +12,7 @@ and tracks **Citrix license** and **certificate** (StoreFront / NetScaler) expir
   │ Collector  │        │ Collector  │         │ Collector  │   PowerShell probe,
   │ (PS probe) │        │ (PS probe) │         │ (PS probe) │   scheduled task
   └─────┬──────┘        └─────┬──────┘         └─────┬──────┘
-        │  HTTPS + shared ingest key (PUSH JSON, self-declares client) │
+        │  HTTPS: enrollment token → per-probe token (PUSH JSON)      │
         └──────────────────────┬──────────────────────────────────────┘
                                ▼
                     your reverse proxy (TLS)
@@ -29,9 +29,12 @@ One container does everything (UI + API + jobs); data is a SQLite file on a host
 bind mount under `/docker/fleetscope`. TLS is terminated by your existing proxy.
 
 ### Decisions
-- **Push model, zero-touch onboarding**: each probe carries a shared **ingest key**
-  and self-declares its **client**/**site**; the server auto-provisions them, so a
-  new probe makes a new dashboard section appear automatically.
+- **Push model with enrollment**: you create a client in the dashboard, which
+  hands back a temporary, time-boxed **enrollment token**. A probe enrolls with it
+  and is issued its own **permanent per-probe token** (scoped to its site); the
+  enrollment token then expires. Sites under a client are still auto-created from
+  the probe's declared name, so onboarding stays light. A leaked probe config
+  exposes only that one probe.
 - **Single image**: the React SPA is built and served by the FastAPI app.
 - **SQLite** on a bind mount — adequate for this scale, keeps it to one container.
 - **No Docker Compose**: image built in GitHub Actions → GHCR, deployed with
@@ -57,11 +60,13 @@ docs/        collector JSON contract + development guide
 ## Deploy (Debian VM with Docker)
 ```bash
 cd deploy
-cp deploy.env.example deploy.env   # set REGISTRY, secrets, FS_INGEST_KEY
+cp deploy.env.example deploy.env   # set REGISTRY, secrets, TZ (default Europe/Rome)
 ./deploy.sh                        # runs fs-app on APP_PORT with a bind mount
 ```
-Then point your reverse proxy at `http://127.0.0.1:${APP_PORT}` and put the same
-`FS_INGEST_KEY` in each probe's `config.json`. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+Then point your reverse proxy at `http://127.0.0.1:${APP_PORT}`. To onboard a
+client: sign in, `POST /api/admin/clients` (returns an enrollment token), and put
+that token in each of that client's probe configs. `TZ` sets the timezone for the
+scheduled jobs. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Status
 v1. The probe→ingest→overview path is verified end to end (auto-provisioning,

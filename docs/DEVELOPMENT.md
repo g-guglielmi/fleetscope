@@ -6,14 +6,14 @@
 cd backend
 python -m venv .venv && .venv/Scripts/activate    # PowerShell: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-FS_INGEST_KEY=devkey uvicorn app.main:app --reload
+uvicorn app.main:app --reload
 ```
 
 - API docs at http://localhost:8000/docs
 - SQLite file `fleetscope.db` is created in the working dir (override with `FS_DATABASE_URL`).
 - On first start it creates tables, an admin user (`FS_ADMIN_EMAIL` / `FS_ADMIN_PASSWORD`,
   default `admin@local` / `changeme`), and a starter advisory set.
-- Set `FS_INGEST_KEY` or ingest returns 503.
+- `TZ` (e.g. `Europe/Rome`) sets the timezone for the scheduled NVD sync and digest.
 
 ## Frontend (React + Vite)
 
@@ -28,31 +28,28 @@ no separate frontend server in production.
 
 ## End-to-end smoke test
 
-Probes **self-register** — no enrollment step. Just push with the shared ingest key
-and the client/site appear automatically.
-
-1. Push a snapshot (auto-creates client "ACME Corp" / site "Milan DC1"):
-   ```bash
-   curl -s localhost:8000/api/ingest -H "Authorization: Bearer devkey" \
-     -H 'Content-Type: application/json' -d '{
-       "client":"ACME Corp","site":"Milan DC1","probe":"DDC01",
-       "collectedAt":"2026-09-03T10:00:00Z",
-       "components":[{"type":"netscaler","hostname":"ns01","build":"13.1-30.0"}]
-     }'
-   ```
-2. Log in and view the overview:
+1. Log in and create a client — this returns a temporary **enrollment token**:
    ```bash
    TOKEN=$(curl -s localhost:8000/api/auth/login -H 'Content-Type: application/json' \
      -d '{"email":"admin@local","password":"changeme"}' | jq -r .access_token)
-   curl -s localhost:8000/api/overview -H "Authorization: Bearer $TOKEN"
+   ENR=$(curl -s localhost:8000/api/admin/clients -H "Authorization: Bearer $TOKEN" \
+     -H 'Content-Type: application/json' -d '{"name":"ACME Corp"}' | jq -r .enrollment.token)
    ```
-   The `ACME Corp` card appears with an open finding (the old NetScaler build matches
-   the seeded CitrixBleed advisory).
-3. In the real UI, sign in and the section is there. Push again with a different
-   `client` and a new section appears — that is the auto-adapt behaviour.
+2. Enroll a probe with it — the response's `collectorToken` is the permanent token:
+   ```bash
+   curl -s localhost:8000/api/ingest -H "Authorization: Bearer $ENR" \
+     -H 'Content-Type: application/json' -d '{
+       "site":"Milan DC1","probe":"DDC01","collectedAt":"2026-09-03T10:00:00Z",
+       "components":[{"type":"netscaler","hostname":"ns01","build":"13.1-30.0"}]
+     }'
+   ```
+3. `curl -s localhost:8000/api/overview -H "Authorization: Bearer $TOKEN"` — the
+   `ACME Corp` card appears with an open finding (the old NetScaler build matches the
+   seeded CitrixBleed advisory). A second probe enrolled with the same token adds a
+   new site under ACME automatically.
 
 To run a probe against a real farm: fill `collector/config.json` (from
-`config.example.json`) with `dashboardUrl`, the shared `ingestKey`, and the
+`config.example.json`) with `dashboardUrl`, the enrollment `token`, and the
 `client`/`site` names, then:
 ```powershell
 Import-Module .\collector\FleetScopeCollector.psm1
@@ -74,7 +71,6 @@ Invoke-FleetScopeCollection -ConfigPath .\collector\config.json
 
 ## Notes / TODO
 - Swap `Base.metadata.create_all` for **Alembic** migrations before production.
-- Shared ingest key trades per-probe scoping for zero-touch onboarding; move to
-  per-probe keys if that trade stops being acceptable.
+- Enrollment tokens are reusable within their window; tighten to single-use if needed.
 - Build out hypervisor **version** collection (PowerCLI / Hyper-V), config-driven per host.
 - Add OIDC to the pluggable auth layer when needed.

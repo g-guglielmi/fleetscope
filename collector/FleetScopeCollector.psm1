@@ -216,7 +216,15 @@ function Invoke-FleetScopeCollection {
         licenses     = @($licenses)
     }
 
-    Send-FleetScope -Config $cfg -Payload $payload
+    $resp = Send-FleetScope -Config $cfg -Payload $payload
+
+    # First push enrolls this probe: swap the temporary enrollment token for the
+    # permanent per-probe token the server returns, persisting it to the config.
+    if ($resp -and $resp.collectorToken) {
+        $cfg.token = $resp.collectorToken
+        $cfg | ConvertTo-Json -Depth 10 | Set-Content -Path $ConfigPath -Encoding UTF8
+        Write-CollectorLog "Enrolled: saved permanent probe token to $ConfigPath"
+    }
 }
 
 function Send-FleetScope {
@@ -228,8 +236,9 @@ function Send-FleetScope {
         $Payload.components.Count, $Payload.certificates.Count, $Payload.licenses.Count, $uri)
     try {
         $resp = Invoke-RestMethod -Method Post -Uri $uri -Body $json -ContentType 'application/json' `
-            -Headers @{ Authorization = "Bearer $($Config.ingestKey)" }
+            -Headers @{ Authorization = "Bearer $($Config.token)" }
         Write-CollectorLog ("Ingest OK: snapshot {0}, {1} findings" -f $resp.snapshotId, $resp.findings)
+        return $resp
     } catch {
         Write-CollectorLog "Ingest FAILED: $_" 'ERROR'
         throw

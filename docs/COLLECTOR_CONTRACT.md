@@ -1,9 +1,11 @@
 # Collector → API JSON contract (v1)
 
-Probes `POST /api/ingest` with header `Authorization: Bearer <ingest key>` (the
-shared `FS_INGEST_KEY`). The probe **self-declares** its `client` and `site`; the
-server slugifies those names and **auto-provisions** the client/site/collector on
-first push, so a new probe makes a new dashboard section appear automatically.
+Probes `POST /api/ingest` with header `Authorization: Bearer <token>`. On the first
+push the token is the **enrollment token** generated in the dashboard when the
+client was created; the response then carries `collectorToken`, the probe's
+**permanent per-probe token**, which the probe saves and uses for every later push.
+The client is bound by the enrollment token (the `client` field below is
+informational); the `site` is auto-created under that client from its name.
 
 ```jsonc
 {
@@ -51,9 +53,9 @@ first push, so a new probe makes a new dashboard section appear automatically.
 
 ### Rules
 - All timestamps ISO-8601 UTC (stored as naive UTC server-side).
-- `client` and `site` are required. The same shared ingest key is used by every
-  probe; a leaked key allows pushing data for any client (acceptable trade for
-  zero-touch onboarding — see the README).
+- `site` is required; `client` is informational (the token binds the client).
+- The enrollment token is temporary and time-boxed; the per-probe token it yields
+  is scoped to that one probe's site. A leaked probe config exposes only that probe.
 - On each successful ingest the server: stores the raw payload as a `snapshot`,
   **replaces** the site's derived `components` / `certificates` / `licenses` with
   this payload (latest-wins), updates the collector's `last_seen`, and re-runs
