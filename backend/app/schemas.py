@@ -34,8 +34,9 @@ class LicenseIn(BaseModel):
 
 class IngestPayload(BaseModel):
     collectorVersion: str | None = None
-    client: str | None = None
-    site: str | None = None
+    client: str = Field(min_length=1)  # client display name; slug auto-derived
+    site: str = Field(min_length=1)    # site display name; slug auto-derived
+    probe: str | None = None           # probe identity (e.g. hostname)
     collectedAt: datetime
     components: list[ComponentIn] = Field(default_factory=list)
     certificates: list[CertificateIn] = Field(default_factory=list)

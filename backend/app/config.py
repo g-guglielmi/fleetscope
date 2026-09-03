@@ -4,12 +4,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FS_", env_file=".env", extra="ignore")
 
-    database_url: str = "postgresql+psycopg://farm:farm@localhost:5432/fleetscope"
+    # SQLite lives on a bind mount in the container (sqlite:////data/fleetscope.db).
+    database_url: str = "sqlite:///./fleetscope.db"
 
     # Auth
     jwt_secret: str = "change-me-in-production"
     jwt_algorithm: str = "HS256"
     jwt_expire_minutes: int = 720
+
+    # Shared ingest key — every probe uses this to push; probes self-declare their
+    # client/site, which are auto-provisioned. Empty = ingest disabled.
+    ingest_key: str = ""
 
     # Bootstrap admin (created on first startup if no users exist)
     admin_email: str = "admin@local"

@@ -9,50 +9,61 @@ and tracks **Citrix license** and **certificate** (StoreFront / NetScaler) expir
 ```
   CLIENT A / Site 1     CLIENT A / Site 2      CLIENT B / Site 1
   ┌────────────┐        ┌────────────┐         ┌────────────┐
-  │ Collector  │        │ Collector  │         │ Collector  │   PowerShell,
-  │ (PS module)│        │ (PS module)│         │ (PS module)│   scheduled task
+  │ Collector  │        │ Collector  │         │ Collector  │   PowerShell probe,
+  │ (PS probe) │        │ (PS probe) │         │ (PS probe) │   scheduled task
   └─────┬──────┘        └─────┬──────┘         └─────┬──────┘
-        │  HTTPS + per-collector bearer token (PUSH JSON)      │
-        └──────────────────────┬──────────────────────────────┘
+        │  HTTPS + shared ingest key (PUSH JSON, self-declares client) │
+        └──────────────────────┬──────────────────────────────────────┘
                                ▼
-                        ┌──────────────┐
-                        │    Caddy     │  auto-TLS reverse proxy
-                        └──────┬───────┘
-                    ┌──────────┴──────────┐
-                    ▼                     ▼
-             ┌────────────┐        ┌────────────┐
-             │  backend   │        │  frontend  │
-             │ (FastAPI)  │        │ (React)    │
-             └─────┬──────┘        └────────────┘
-                   ▼
-             ┌────────────┐
-             │  Postgres  │  raw JSONB snapshots + derived typed tables
-             └────────────┘
+                    your reverse proxy (TLS)
+                               ▼
+                 ┌─────────────────────────────┐
+                 │  fs-app  (single container)  │
+                 │  FastAPI: API + built React  │
+                 │  UI + scheduler (NVD, email) │
+                 │  SQLite on a bind mount       │
+                 └─────────────────────────────┘
 ```
 
+One container does everything (UI + API + jobs); data is a SQLite file on a host
+bind mount under `/docker/fleetscope`. TLS is terminated by your existing proxy.
+
 ### Decisions
-- **Push model**: collectors reach out to an internet-facing dashboard; nothing inbound to client networks.
-- **Central multi-tenant**: one dashboard, per-client data isolation. Overview tab + per-client sections.
-- **No Docker Compose**: images built in GitHub Actions → GHCR, deployed with `deploy/deploy.sh` (plain `docker run` on a shared network).
-- **Collector auth**: per-collector tokens, stored **hashed**, scoped to one client/site, ingest is **write-only**.
+- **Push model, zero-touch onboarding**: each probe carries a shared **ingest key**
+  and self-declares its **client**/**site**; the server auto-provisions them, so a
+  new probe makes a new dashboard section appear automatically.
+- **Single image**: the React SPA is built and served by the FastAPI app.
+- **SQLite** on a bind mount — adequate for this scale, keeps it to one container.
+- **No Docker Compose**: image built in GitHub Actions → GHCR, deployed with
+  `deploy/deploy.sh` (one `docker run`, bind mounts, no named volumes).
+- **TLS**: handled by your own reverse proxy in front of `APP_PORT`.
 - **UI auth**: local accounts (v1), built pluggable so OIDC can be added later.
-- **Vuln lookup**: build-number matching against a curated Citrix advisory table (CTX bulletins). A daily NVD sync adds review candidates (no auto-match until a build predicate is curated) — not pure NVD/CPE auto-matching.
-- **Alerting**: daily email (SMTP) digest of upcoming cert/license expiries and critical findings.
+- **Vuln lookup**: build-number matching against a curated Citrix advisory table
+  (CTX bulletins). A daily NVD sync adds review candidates (no auto-match until a
+  build predicate is curated) — not pure NVD/CPE auto-matching.
+- **Alerting**: daily email (SMTP) digest of upcoming cert/license expiries and criticals.
 - **Access**: MSP staff only (no per-tenant client logins in v1).
 
 ## Repo layout
 ```
-backend/     FastAPI app (ingest, auth, overview, clients, enrichment)
-frontend/    React + Vite + Tailwind UI
-collector/   PowerShell collector module + installer
-deploy/      deploy.sh + Caddyfile (no compose)
-.github/     GHCR build workflow
-docs/        collector JSON contract + notes
+Dockerfile   single image: Node builds the SPA, FastAPI serves it + the API
+backend/     FastAPI app (ingest, auth, overview, clients, admin, enrichment)
+frontend/    React + Vite + Tailwind UI (built into the image)
+collector/   PowerShell probe module + scheduled-task installer
+deploy/      deploy.sh (docker run, bind mounts) + deploy.env.example
+docs/        collector JSON contract + development guide
 ```
 
-## Quick start (local dev)
-See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). In short: run Postgres, `uvicorn app.main:app` in `backend/`, `npm run dev` in `frontend/`, and point a collector at `http://localhost:8000`.
+## Deploy (Debian VM with Docker)
+```bash
+cd deploy
+cp deploy.env.example deploy.env   # set REGISTRY, secrets, FS_INGEST_KEY
+./deploy.sh                        # runs fs-app on APP_PORT with a bind mount
+```
+Then point your reverse proxy at `http://127.0.0.1:${APP_PORT}` and put the same
+`FS_INGEST_KEY` in each probe's `config.json`. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Status
-Scaffold / v1 skeleton. The collector→ingest→overview path works end-to-end for OS,
-Citrix controller/VDA, StoreFront, NetScaler, license, and certificate data.
+v1. The probe→ingest→overview path is verified end to end (auto-provisioning,
+advisory matching, cert/license expiry, email digest). Collector queries need
+validating against live farms; advisory predicates need curating.

@@ -1,7 +1,8 @@
-"""Admin/enrollment endpoints: create clients, sites, and collectors.
+"""Admin endpoints: manage clients/sites, curate advisories, trigger jobs.
 
-Creating a collector returns its token **once** — it is stored only as a hash,
-so it cannot be retrieved again. Copy it into the collector's config immediately.
+Clients and sites are normally auto-created when a probe first pushes (see
+routers/ingest.py). These endpoints are for manual management (rename/create
+ahead of time) and for the advisory-curation workflow.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,8 +12,8 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..deps import get_current_user
-from ..models import Advisory, Client, Collector, Site, User
-from ..security import generate_collector_token, hash_token
+from ..models import Advisory, Client, Site, User
+from ..security import slugify
 from ..services.alerts import send_digest
 from ..services.enrichment import rematch_site
 from ..services.nvd import sync_once
@@ -21,16 +22,10 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
 class ClientIn(BaseModel):
-    slug: str
     name: str
 
 
 class SiteIn(BaseModel):
-    slug: str
-    name: str
-
-
-class CollectorIn(BaseModel):
     name: str
 
 
@@ -45,9 +40,10 @@ class AdvisoryPatch(BaseModel):
 
 @router.post("/clients", status_code=201)
 def create_client(body: ClientIn, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if db.scalar(select(Client).where(Client.slug == body.slug)):
-        raise HTTPException(status.HTTP_409_CONFLICT, "Client slug already exists")
-    client = Client(slug=body.slug, name=body.name)
+    slug = slugify(body.name)
+    if db.scalar(select(Client).where(Client.slug == slug)):
+        raise HTTPException(status.HTTP_409_CONFLICT, "Client already exists")
+    client = Client(slug=slug, name=body.name)
     db.add(client)
     db.commit()
     return {"slug": client.slug, "name": client.name}
@@ -58,38 +54,10 @@ def create_site(client_slug: str, body: SiteIn, _: User = Depends(get_current_us
     client = db.scalar(select(Client).where(Client.slug == client_slug))
     if client is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown client")
-    site = Site(client_id=client.id, slug=body.slug, name=body.name)
+    site = Site(client_id=client.id, slug=slugify(body.name), name=body.name)
     db.add(site)
     db.commit()
     return {"client": client_slug, "slug": site.slug, "name": site.name}
-
-
-@router.post("/clients/{client_slug}/sites/{site_slug}/collectors", status_code=201)
-def create_collector(
-    client_slug: str,
-    site_slug: str,
-    body: CollectorIn,
-    _: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    site = db.scalar(
-        select(Site).join(Client).where(Client.slug == client_slug, Site.slug == site_slug)
-    )
-    if site is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown client/site")
-
-    token = generate_collector_token()
-    collector = Collector(site_id=site.id, name=body.name, token_hash=hash_token(token))
-    db.add(collector)
-    db.commit()
-    # The plaintext token is returned exactly once.
-    return {
-        "collector": body.name,
-        "client": client_slug,
-        "site": site_slug,
-        "token": token,
-        "note": "Store this token now; it is not recoverable.",
-    }
 
 
 # ---- Advisory curation (the "curated" half of curated + NVD) ----

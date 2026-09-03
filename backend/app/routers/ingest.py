@@ -1,37 +1,68 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import delete
+from fastapi import APIRouter, Depends
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from ..deps import get_collector
 from ..db import get_db
-from ..models import Certificate, Collector, Component, License, Site, Snapshot, utcnow
+from ..deps import verify_ingest_key
+from ..models import (
+    Certificate,
+    Client,
+    Collector,
+    Component,
+    License,
+    Site,
+    Snapshot,
+    naive_utc,
+    utcnow,
+)
 from ..schemas import IngestPayload, IngestResult
+from ..security import slugify
 from ..services.enrichment import rematch_site
 
 router = APIRouter(prefix="/api", tags=["ingest"])
 
 
-@router.post("/ingest", response_model=IngestResult)
-def ingest(
-    payload: IngestPayload,
-    collector: Collector = Depends(get_collector),
-    db: Session = Depends(get_db),
-) -> IngestResult:
-    site = db.get(Site, collector.site_id)
+def _get_or_create_client(db: Session, name: str) -> Client:
+    slug = slugify(name)
+    client = db.scalar(select(Client).where(Client.slug == slug))
+    if client is None:
+        client = Client(slug=slug, name=name)
+        db.add(client)
+        db.flush()
+    return client
+
+
+def _get_or_create_site(db: Session, client: Client, name: str) -> Site:
+    slug = slugify(name)
+    site = db.scalar(select(Site).where(Site.client_id == client.id, Site.slug == slug))
     if site is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Collector's site no longer exists")
+        site = Site(client_id=client.id, slug=slug, name=name)
+        db.add(site)
+        db.flush()
+    return site
 
-    # If the body names a scope, it must match the token's scope.
-    if payload.site and payload.site != site.slug:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Body 'site' does not match token scope")
-    if payload.client and site.client and payload.client != site.client.slug:
-        raise HTTPException(status.HTTP_409_CONFLICT, "Body 'client' does not match token scope")
 
-    # Store the raw snapshot (history).
+def _get_or_create_collector(db: Session, site: Site, name: str) -> Collector:
+    collector = db.scalar(select(Collector).where(Collector.site_id == site.id, Collector.name == name))
+    if collector is None:
+        collector = Collector(site_id=site.id, name=name)
+        db.add(collector)
+        db.flush()
+    return collector
+
+
+@router.post("/ingest", response_model=IngestResult, dependencies=[Depends(verify_ingest_key)])
+def ingest(payload: IngestPayload, db: Session = Depends(get_db)) -> IngestResult:
+    # Self-registration: the probe declares its client/site; we auto-provision so
+    # the Overview grows a new section automatically. No pre-enrollment needed.
+    client = _get_or_create_client(db, payload.client)
+    site = _get_or_create_site(db, client, payload.site)
+    collector = _get_or_create_collector(db, site, payload.probe or f"{site.slug}-collector")
+
     snapshot = Snapshot(
         site_id=site.id,
         collector_id=collector.id,
-        collected_at=payload.collectedAt,
+        collected_at=naive_utc(payload.collectedAt),
         raw=payload.model_dump(mode="json"),
     )
     db.add(snapshot)
@@ -49,14 +80,14 @@ def ingest(
     for cert in payload.certificates:
         db.add(Certificate(
             site_id=site.id, source=cert.source, hostname=cert.hostname,
-            subject=cert.subject, issuer=cert.issuer, not_after=cert.notAfter,
+            subject=cert.subject, issuer=cert.issuer, not_after=naive_utc(cert.notAfter),
             thumbprint=cert.thumbprint,
         ))
     for lic in payload.licenses:
         db.add(License(
             site_id=site.id, product=lic.product, edition=lic.edition, model=lic.model,
-            count=lic.count, subscription_advantage_date=lic.subscriptionAdvantageDate,
-            expires=lic.expires,
+            count=lic.count, subscription_advantage_date=naive_utc(lic.subscriptionAdvantageDate),
+            expires=naive_utc(lic.expires),
         ))
 
     db.flush()  # assign component ids before matching

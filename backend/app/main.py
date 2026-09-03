@@ -1,10 +1,13 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from . import models  # noqa: F401  (register models on Base)
 from .config import settings
@@ -55,3 +58,21 @@ app.include_router(admin.router)
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+# ---- Serve the built React SPA from this same container (single-image deploy) ----
+# In the Docker image the frontend build is copied to app/static. In local dev
+# this directory is absent, so the API runs standalone and Vite serves the UI.
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+if os.path.isdir(STATIC_DIR):
+    app.mount("/assets", StaticFiles(directory=os.path.join(STATIC_DIR, "assets")), name="assets")
+
+    @app.get("/{full_path:path}")
+    def spa(full_path: str):
+        # API routes are matched earlier; anything else falls back to the SPA.
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not found")
+        candidate = os.path.join(STATIC_DIR, full_path)
+        if full_path and os.path.isfile(candidate):
+            return FileResponse(candidate)
+        return FileResponse(os.path.join(STATIC_DIR, "index.html"))

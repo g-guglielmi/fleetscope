@@ -209,6 +209,7 @@ function Invoke-FleetScopeCollection {
         collectorVersion = $script:CollectorVersion
         client       = $cfg.client
         site         = $cfg.site
+        probe        = $env:COMPUTERNAME
         collectedAt  = (Get-Date).ToUniversalTime().ToString('o')
         components   = @($components)
         certificates = @($certificates)
@@ -227,7 +228,7 @@ function Send-FleetScope {
         $Payload.components.Count, $Payload.certificates.Count, $Payload.licenses.Count, $uri)
     try {
         $resp = Invoke-RestMethod -Method Post -Uri $uri -Body $json -ContentType 'application/json' `
-            -Headers @{ Authorization = "Bearer $($Config.token)" }
+            -Headers @{ Authorization = "Bearer $($Config.ingestKey)" }
         Write-CollectorLog ("Ingest OK: snapshot {0}, {1} findings" -f $resp.snapshotId, $resp.findings)
     } catch {
         Write-CollectorLog "Ingest FAILED: $_" 'ERROR'

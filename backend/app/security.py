@@ -1,37 +1,31 @@
-import hashlib
-import hmac
-import secrets
+import re
+import unicodedata
 from datetime import datetime, timedelta, timezone
 
+import bcrypt
 import jwt
-from passlib.context import CryptContext
 
 from .config import settings
 
-_pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-
-# ---- User passwords ----
+# ---- User passwords (bcrypt directly; passlib is unmaintained) ----
 def hash_password(password: str) -> str:
-    return _pwd.hash(password)
+    # bcrypt hard-caps the input at 72 bytes.
+    return bcrypt.hashpw(password.encode("utf-8")[:72], bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(password: str, password_hash: str) -> bool:
-    return _pwd.verify(password, password_hash)
+    try:
+        return bcrypt.checkpw(password.encode("utf-8")[:72], password_hash.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
 
 
-# ---- Collector tokens ----
-def generate_collector_token() -> str:
-    """A high-entropy opaque token handed to a collector once, never stored raw."""
-    return secrets.token_urlsafe(32)
-
-
-def hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-def tokens_equal(a: str, b: str) -> bool:
-    return hmac.compare_digest(a, b)
+# ---- Slugs (for auto-provisioned clients/sites) ----
+def slugify(value: str) -> str:
+    value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    value = re.sub(r"[^a-zA-Z0-9]+", "-", value).strip("-").lower()
+    return value or "unnamed"
 
 
 # ---- JWT for the UI ----

@@ -1,8 +1,8 @@
 {
-  "dashboardUrl": "https://dashboard.example.com",
-  "token": "PASTE-COLLECTOR-TOKEN-HERE",
-  "client": "acme",
-  "site": "milan-dc1",
+  "dashboardUrl": "https://fleetscope.example.com",
+  "ingestKey": "PASTE-SHARED-INGEST-KEY-HERE",
+  "client": "ACME Corp",
+  "site": "Milan DC1",
   "collect": {
     "controllers": true,
     "vdas": true,
