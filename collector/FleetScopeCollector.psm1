@@ -18,7 +18,7 @@
     credentials are stored in the config. NetScaler still uses its own creds.
 #>
 
-$script:CollectorVersion = '1.1.0'
+$script:CollectorVersion = '1.2.0'
 
 function Write-CollectorLog {
     param([string]$Message, [string]$Level = 'INFO')
@@ -43,6 +43,46 @@ function ConvertTo-IsoUtc {
     param($Value)
     if (-not $Value) { return $null }
     try { return ([datetime]$Value).ToUniversalTime().ToString('o') } catch { return $null }
+}
+
+# ----------------------------------------------------------------------------
+# DPAPI credential storage (NetScaler passwords)
+# ----------------------------------------------------------------------------
+
+function Protect-FleetScopeCredential {
+    <#
+    .SYNOPSIS
+      Encrypts a password with DPAPI and saves it to a file.
+    .DESCRIPTION
+      The encrypted file can only be decrypted by the same Windows account on
+      the same machine. Run this AS THE SERVICE ACCOUNT that the scheduled task
+      uses — otherwise the collector won't be able to decrypt it at runtime.
+
+      For a gMSA, run via a one-shot scheduled task:
+        $a = New-ScheduledTaskAction -Execute powershell.exe -Argument `
+          "-Command Import-Module .\FleetScopeCollector.psm1; Protect-FleetScopeCredential -Path C:\ProgramData\FleetScope\ns01.cred"
+        Register-ScheduledTask -TaskName FSCredHelper -Action $a `
+          -Principal (New-ScheduledTaskPrincipal -UserId 'DOMAIN\svc$' -LogonType Password) -Force
+        Start-ScheduledTask FSCredHelper
+        Unregister-ScheduledTask FSCredHelper -Confirm:$false
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path
+    )
+    $secure = Read-Host -Prompt "Enter password for $Path" -AsSecureString
+    $encrypted = $secure | ConvertFrom-SecureString
+    $encrypted | Set-Content -Path $Path -Encoding UTF8 -Force
+    Write-Host "Credential saved to $Path (DPAPI-encrypted, bound to this account on this machine)."
+}
+
+function Unprotect-FleetScopeCredential {
+    # Decrypts a DPAPI-encrypted credential file back to plaintext.
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path $Path)) { throw "Credential file not found: $Path" }
+    $encrypted = Get-Content -Path $Path -Raw -ErrorAction Stop
+    $secure = $encrypted | ConvertTo-SecureString
+    return [System.Net.NetworkCredential]::new('', $secure).Password
 }
 
 # ----------------------------------------------------------------------------
@@ -187,9 +227,19 @@ function Get-FSLicenses {
 function Get-FSNetScaler {
     param([pscustomobject]$Config)
 
-    $password = if ($Config.passwordEnv) { [Environment]::GetEnvironmentVariable($Config.passwordEnv) } else { $null }
+    $password = $null
+    if ($Config.passwordFile) {
+        try {
+            $password = Unprotect-FleetScopeCredential -Path $Config.passwordFile
+        } catch {
+            Write-CollectorLog "Failed to decrypt credential file '$($Config.passwordFile)': $_" 'WARN'
+        }
+    }
+    if (-not $password -and $Config.passwordEnv) {
+        $password = [Environment]::GetEnvironmentVariable($Config.passwordEnv)
+    }
     if (-not $password) {
-        Write-CollectorLog "No password for NetScaler $($Config.host) (env $($Config.passwordEnv))." 'WARN'
+        Write-CollectorLog "No password for NetScaler $($Config.host). Set passwordFile (DPAPI) or passwordEnv in config." 'WARN'
         return @{ components = @(); certificates = @() }
     }
 
@@ -336,4 +386,4 @@ function Send-FleetScope {
     }
 }
 
-Export-ModuleMember -Function Invoke-FleetScopeCollection, Send-FleetScope
+Export-ModuleMember -Function Invoke-FleetScopeCollection, Send-FleetScope, Protect-FleetScopeCredential

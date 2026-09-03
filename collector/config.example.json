@@ -14,7 +14,7 @@
     {
       "host": "https://ns01.acme.local",
       "username": "nsroot",
-      "passwordEnv": "FS_NS01_PW",
+      "passwordFile": "C:\\ProgramData\\FleetScope\\ns01.cred",
       "skipCertificateCheck": false
     }
   ]
