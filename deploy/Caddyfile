@@ -1,0 +1,17 @@
+# Caddy edge proxy — automatic HTTPS.
+# Replace dashboard.example.com with your real hostname; Caddy fetches a
+# Let's Encrypt certificate for it automatically.
+
+dashboard.example.com {
+    encode gzip
+
+    # API to the FastAPI backend.
+    handle /api/* {
+        reverse_proxy backend:8000
+    }
+
+    # Everything else to the static SPA.
+    handle {
+        reverse_proxy frontend:80
+    }
+}

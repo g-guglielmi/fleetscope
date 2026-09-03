@@ -1,0 +1,12 @@
+# Normalize line endings. Force LF for everything text so shell scripts and
+# configs stay Unix-clean on the Debian deploy host regardless of who commits.
+* text=auto eol=lf
+
+# PowerShell runs on Windows collectors — keep CRLF.
+*.ps1  text eol=crlf
+*.psm1 text eol=crlf
+
+# Binaries (add as needed)
+*.png binary
+*.jpg binary
+*.ico binary

@@ -1,0 +1,22 @@
+{
+  "dashboardUrl": "https://dashboard.example.com",
+  "token": "PASTE-COLLECTOR-TOKEN-HERE",
+  "client": "acme",
+  "site": "milan-dc1",
+  "collect": {
+    "controllers": true,
+    "vdas": true,
+    "storefront": true,
+    "license": true,
+    "localCertificates": true
+  },
+  "netscalers": [
+    {
+      "host": "https://ns01.acme.local",
+      "username": "nsroot",
+      "passwordEnv": "FS_NS01_PW",
+      "skipCertificateCheck": false
+    }
+  ],
+  "hypervisors": []
+}
