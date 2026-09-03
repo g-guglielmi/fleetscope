@@ -2,6 +2,8 @@ import logging
 import os
 from contextlib import asynccontextmanager
 
+from alembic import command
+from alembic.config import Config as AlembicConfig
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI, HTTPException
@@ -11,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import models  # noqa: F401  (register models on Base)
 from .config import settings
-from .db import Base, SessionLocal, engine
+from .db import SessionLocal
 from .routers import admin, auth, clients, ingest, overview
 from .seed import run as run_seed
 from .services.alerts import send_digest
@@ -23,11 +25,20 @@ logging.basicConfig(level=logging.INFO)
 # name via pytz. Falls back to UTC.
 scheduler = BackgroundScheduler(timezone=os.environ.get("TZ", "UTC"))
 
+# backend/ dir (holds alembic.ini + migrations/); /app in the container.
+_BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+
+
+def _run_migrations() -> None:
+    """Bring the database schema up to head. Idempotent — a no-op when current."""
+    cfg = AlembicConfig(os.path.join(_BASE_DIR, "alembic.ini"))
+    cfg.set_main_option("script_location", os.path.join(_BASE_DIR, "migrations"))
+    command.upgrade(cfg, "head")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # v1 scaffold: create tables directly. Swap for Alembic migrations before prod.
-    Base.metadata.create_all(bind=engine)
+    _run_migrations()
     with SessionLocal() as db:
         run_seed(db)
 

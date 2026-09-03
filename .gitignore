@@ -22,3 +22,8 @@ deploy/*.env
 Thumbs.db
 .idea/
 .vscode/
+
+# Local SQLite databases
+*.db
+*.db-wal
+*.db-shm

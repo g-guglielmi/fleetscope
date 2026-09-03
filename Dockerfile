@@ -22,6 +22,8 @@ COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/app ./app
+COPY backend/alembic.ini ./
+COPY backend/migrations ./migrations
 # Built SPA is served from app/static (see app/main.py).
 COPY --from=frontend /ui/dist ./app/static
 

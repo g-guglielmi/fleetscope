@@ -69,8 +69,20 @@ Invoke-FleetScopeCollection -ConfigPath .\collector\config.json
   critical findings. Set `FS_SMTP_HOST` + `FS_ALERT_TO` to enable; otherwise it
   logs the digest. Force a run: `POST /api/admin/send-digest`.
 
+## Database migrations (Alembic)
+The app runs `alembic upgrade head` on startup, so a fresh DB is created and an
+existing one is upgraded automatically — data survives schema changes.
+
+When you change a model, generate a migration and review it before committing:
+```bash
+cd backend
+FS_DATABASE_URL="sqlite:///./dev.db" alembic upgrade head          # get current
+FS_DATABASE_URL="sqlite:///./dev.db" alembic revision --autogenerate -m "what changed"
+# review migrations/versions/<new>.py, then it applies on next startup
+```
+SQLite ALTERs use Alembic batch mode (configured in `migrations/env.py`).
+
 ## Notes / TODO
-- Swap `Base.metadata.create_all` for **Alembic** migrations before production.
 - Enrollment tokens are reusable within their window; tighten to single-use if needed.
 - Build out hypervisor **version** collection (PowerCLI / Hyper-V), config-driven per host.
 - Add OIDC to the pluggable auth layer when needed.
