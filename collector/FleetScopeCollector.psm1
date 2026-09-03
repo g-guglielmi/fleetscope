@@ -349,10 +349,10 @@ function Invoke-FleetScopeCollection {
     # If we cannot save it, the probe keeps re-enrolling and will start failing
     # once the enrollment token expires or is revoked -- so make that loud.
     if ($resp -and $resp.collectorToken) {
-        $warn = ("Enrolled but the permanent probe token could NOT be saved to '{0}'. " +
+        $warn = "Enrolled but the permanent probe token could NOT be saved to '$ConfigPath'. " +
             "This probe will keep re-enrolling and will FAIL once the enrollment token " +
             "expires or is revoked. Grant the scheduled task's account write access to " +
-            "the config, or move it to a writable location." -f $ConfigPath)
+            "the config, or move it to a writable location."
 
         if (-not (Test-FileWritable -Path $ConfigPath)) {
             Write-CollectorLog $warn 'ERROR'
