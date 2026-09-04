@@ -11,16 +11,23 @@
     WinRM/remote-CIM rights on the StoreFront and license servers.
 
     Usage (elevated):
-        .\Install-Collector.ps1 -ServiceAccount 'CONTOSO\svc-fleetscope$' `
-            -ConfigPath 'C:\ProgramData\FleetScope\config.json' -IntervalHours 6
+      gMSA (Task Scheduler fetches the managed password itself):
+        .\Install-Collector.ps1 -ServiceAccount 'CONTOSO\svc-fleetscope$'
+      Regular domain account (Windows needs its password to register the task):
+        .\Install-Collector.ps1 -Credential (Get-Credential 'CONTOSO\svc-fleetscope')
 #>
-[CmdletBinding()]
+[CmdletBinding(DefaultParameterSetName = 'Gmsa')]
 param(
-    [Parameter(Mandatory)][string]$ServiceAccount,   # gMSA (e.g. CONTOSO\svc-fleetscope$) or domain account
+    # gMSA, e.g. CONTOSO\svc-fleetscope$
+    [Parameter(Mandatory, ParameterSetName = 'Gmsa')][string]$ServiceAccount,
+    # Regular domain account + password
+    [Parameter(Mandatory, ParameterSetName = 'Password')][pscredential]$Credential,
     [string]$ConfigPath = 'C:\ProgramData\FleetScope\config.json',
     [int]$IntervalHours = 6,
     [string]$TaskName = 'FleetScopeCollector'
 )
+
+if ($Credential) { $ServiceAccount = $Credential.UserName }
 
 $ErrorActionPreference = 'Stop'
 $moduleSource = Join-Path $PSScriptRoot 'FleetScopeCollector.psm1'
@@ -47,13 +54,20 @@ $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
     -RepetitionInterval (New-TimeSpan -Hours $IntervalHours)
 
-# LogonType Password lets the Task Scheduler service fetch a gMSA's managed
-# password automatically. For a normal domain account, set its password in Task
-# Scheduler after install (or register with -User/-Password).
-$principal = New-ScheduledTaskPrincipal -UserId $ServiceAccount -LogonType Password -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopOnIdleEnd
+$register = @{ TaskName = $TaskName; Action = $action; Trigger = $trigger; Settings = $settings; Force = $true }
 
-Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
-    -Principal $principal -Settings $settings -Force | Out-Null
+if ($Credential) {
+    # Regular account: Task Scheduler stores the password so the task can run
+    # whether or not the user is logged on.
+    $register['User'] = $ServiceAccount
+    $register['Password'] = $Credential.GetNetworkCredential().Password
+    $register['RunLevel'] = 'Highest'
+} else {
+    # gMSA: LogonType Password makes Task Scheduler fetch the managed password itself.
+    $register['Principal'] = New-ScheduledTaskPrincipal -UserId $ServiceAccount -LogonType Password -RunLevel Highest
+}
+
+Register-ScheduledTask @register | Out-Null
 
 Write-Host "Installed '$TaskName' running as $ServiceAccount (every $IntervalHours h). Config: $ConfigPath"
