@@ -80,7 +80,7 @@ function Unprotect-FleetScopeCredential {
     # Decrypts a DPAPI-encrypted credential file back to plaintext.
     param([Parameter(Mandatory)][string]$Path)
     if (-not (Test-Path $Path)) { throw "Credential file not found: $Path" }
-    $encrypted = Get-Content -Path $Path -Raw -ErrorAction Stop
+    $encrypted = (Get-Content -Path $Path -Raw -ErrorAction Stop).Trim()
     $secure = $encrypted | ConvertTo-SecureString
     return [System.Net.NetworkCredential]::new('', $secure).Password
 }
