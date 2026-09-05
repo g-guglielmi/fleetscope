@@ -53,14 +53,17 @@ no separate frontend server in production.
 One probe per site runs on a **management VM** as a **domain service account** and
 reaches everything remotely — nothing is network-scanned:
 
-- **Controllers / VDAs / hypervisor connections** — Citrix **Remote PowerShell SDK**
-  pointed at a DDC (`-AdminAddress`); enumerates the whole site.
+- **Controllers / VDAs / hypervisor connections** — the **CVAD PowerShell SDK**
+  snap-ins pointed at a DDC (`-AdminAddress`); enumerates the whole site.
 - **StoreFront** (version, OS, IIS certs) — PowerShell Remoting (WinRM) per server.
 - **License** pools — remote CIM (WinRM) per server.
 - **NetScaler** — NITRO REST with its own credentials.
 
 Prerequisites on the management VM / account:
-- Install the free **Citrix Remote PowerShell SDK**.
+- Install the **CVAD PowerShell SDK** from the CVAD product ISO
+  (`x64\Citrix Desktop Delivery Controller\Broker_PowerShellSnapIn_x64.msi` is enough),
+  matching the site's version. Note: the separately downloadable "Remote PowerShell
+  SDK" is the Citrix Cloud/DaaS variant and is **not** the right one for an on-prem site.
 - The service account needs Citrix **Read Only Administrator** (delegated admin) and
   **WinRM/CIM** rights on the StoreFront and license servers. A **gMSA** is ideal.
 
