@@ -1,24 +1,25 @@
-"""Admin endpoints: create clients (with an enrollment token), curate advisories,
-trigger jobs.
+"""Admin endpoints: clients + enrollment tokens, the agent install command,
+advisory curation, manual job triggers. All require the admin role.
 
 Enrollment flow: create a client here and you get back a temporary enrollment
-token. Put it in a probe's config; on first push the probe is issued its own
-permanent token (see routers/ingest.py) and the enrollment token can expire.
+token. The generated install command embeds one; on `install` the agent enrolls
+(routers/agent.py) and is issued its own permanent token.
 """
 
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..config import settings
 from ..db import get_db
-from ..deps import get_current_user
+from ..deps import client_ip, require_admin
 from ..models import Advisory, Client, EnrollmentToken, Site, User, utcnow
 from ..security import generate_token, hash_token, slugify
 from ..services.alerts import send_digest
+from ..services.audit import audit
 from ..services.enrichment import rematch_site
 from ..services.nvd import sync_once
 
@@ -32,6 +33,11 @@ class ClientIn(BaseModel):
 
 class EnrollmentIn(BaseModel):
     label: str | None = None
+    ttl_hours: int | None = None
+
+
+class InstallCommandIn(BaseModel):
+    site: str | None = None       # site display name to embed; placeholder if omitted
     ttl_hours: int | None = None
 
 
@@ -57,12 +63,20 @@ def _mint_enrollment(db: Session, client: Client, label: str | None, ttl_hours: 
     db.flush()
     # The plaintext token is returned exactly once.
     return {"id": row.id, "token": token, "expiresAt": row.expires_at, "label": label,
-            "note": "Put this in the probe config as `token`. It expires; the probe "
-                    "swaps it for a permanent one on first push."}
+            "note": "Use this in the agent install command. It expires; the agent "
+                    "swaps it for a permanent token on enrollment."}
 
 
+def _client(db: Session, slug: str) -> Client:
+    client = db.scalar(select(Client).where(Client.slug == slug))
+    if client is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown client")
+    return client
+
+
+# ---- Clients ----
 @router.post("/clients", status_code=201)
-def create_client(body: ClientIn, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_client(body: ClientIn, request: Request, me: User = Depends(require_admin), db: Session = Depends(get_db)):
     slug = slugify(body.name)
     if db.scalar(select(Client).where(Client.slug == slug)):
         raise HTTPException(status.HTTP_409_CONFLICT, "Client already exists")
@@ -70,26 +84,59 @@ def create_client(body: ClientIn, _: User = Depends(get_current_user), db: Sessi
     db.add(client)
     db.flush()
     enrollment = _mint_enrollment(db, client, label="initial", ttl_hours=body.ttl_hours)
+    audit(db, me.email, "client.create", "client", client.slug, {"name": body.name}, client_ip(request))
     db.commit()
     return {"client": {"slug": client.slug, "name": client.name}, "enrollment": enrollment}
 
 
+@router.delete("/clients/{client_slug}", status_code=204)
+def delete_client(client_slug: str, request: Request, me: User = Depends(require_admin), db: Session = Depends(get_db)) -> None:
+    client = _client(db, client_slug)
+    audit(db, me.email, "client.delete", "client", client.slug, {"name": client.name, "sites": len(client.sites)}, client_ip(request))
+    db.delete(client)  # cascades: sites, configs, collectors, snapshots, credentials, tokens
+    db.commit()
+
+
+@router.post("/clients/{client_slug}/install-command")
+def install_command(client_slug: str, body: InstallCommandIn, request: Request,
+                    me: User = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Mint a fresh enrollment token and render the one-line agent install
+    (docs/AGENT.md §8)."""
+    client = _client(db, client_slug)
+    enrollment = _mint_enrollment(db, client, label=f"install:{body.site or '-'}", ttl_hours=body.ttl_hours)
+    audit(db, me.email, "enrollment.mint", "client", client.slug, {"site": body.site, "purpose": "install-command"}, client_ip(request))
+    db.commit()
+
+    warnings: list[str] = []
+    url = settings.public_url.rstrip("/") or "https://<dashboard-url>"
+    if not settings.public_url:
+        warnings.append("FS_PUBLIC_URL is not set; replace <dashboard-url> in the command.")
+    key = settings.signing_pubkey or "<signing-public-key>"
+    if not settings.signing_pubkey:
+        warnings.append("FS_SIGNING_PUBKEY is not set; the agent cannot verify check modules until it is.")
+    site = body.site or "<site name>"
+    command = (
+        f'iwr {url}/api/agent/release/download -OutFile FleetScopeAgent.exe\n'
+        f'.\\FleetScopeAgent.exe install --url {url} --token {enrollment["token"]} '
+        f'--site "{site}" --signing-key {key}'
+    )
+    return {"command": command, "enrollment": enrollment, "warnings": warnings}
+
+
+# ---- Enrollment tokens ----
 @router.post("/clients/{client_slug}/enrollment-tokens", status_code=201)
-def create_enrollment(client_slug: str, body: EnrollmentIn,
-                      _: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    client = db.scalar(select(Client).where(Client.slug == client_slug))
-    if client is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown client")
+def create_enrollment(client_slug: str, body: EnrollmentIn, request: Request,
+                      me: User = Depends(require_admin), db: Session = Depends(get_db)):
+    client = _client(db, client_slug)
     enrollment = _mint_enrollment(db, client, body.label, body.ttl_hours)
+    audit(db, me.email, "enrollment.mint", "client", client.slug, {"label": body.label}, client_ip(request))
     db.commit()
     return enrollment
 
 
 @router.get("/clients/{client_slug}/enrollment-tokens")
-def list_enrollment(client_slug: str, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    client = db.scalar(select(Client).where(Client.slug == client_slug))
-    if client is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown client")
+def list_enrollment(client_slug: str, _: User = Depends(require_admin), db: Session = Depends(get_db)):
+    client = _client(db, client_slug)
     rows = db.scalars(select(EnrollmentToken).where(EnrollmentToken.client_id == client.id))
     now = utcnow()
     return [
@@ -100,11 +147,12 @@ def list_enrollment(client_slug: str, _: User = Depends(get_current_user), db: S
 
 
 @router.post("/enrollment-tokens/{token_id}/revoke")
-def revoke_enrollment(token_id: int, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
+def revoke_enrollment(token_id: int, request: Request, me: User = Depends(require_admin), db: Session = Depends(get_db)):
     row = db.get(EnrollmentToken, token_id)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown enrollment token")
     row.revoked = True
+    audit(db, me.email, "enrollment.revoke", "enrollment_token", token_id, None, client_ip(request))
     db.commit()
     return {"ok": True, "id": token_id, "revoked": True}
 
@@ -113,7 +161,7 @@ def revoke_enrollment(token_id: int, _: User = Depends(get_current_user), db: Se
 @router.get("/advisories")
 def list_advisories(
     review_only: bool = False,
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     stmt = select(Advisory).order_by(Advisory.needs_review.desc(), Advisory.severity)
@@ -134,7 +182,8 @@ def list_advisories(
 def curate_advisory(
     advisory_id: int,
     patch: AdvisoryPatch,
-    _: User = Depends(get_current_user),
+    request: Request,
+    me: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     """Add a build predicate to an advisory so it starts matching components.
@@ -153,16 +202,29 @@ def curate_advisory(
     if changed_predicate:
         for site in db.scalars(select(Site)):
             rematch_site(db, site.id)
+    audit(db, me.email, "advisory.curate", "advisory", adv.id, fields, client_ip(request))
     db.commit()
     return {"ok": True, "id": adv.id, "rematched": changed_predicate}
 
 
 # ---- Manual triggers (the daily jobs also run on a schedule) ----
 @router.post("/sync-nvd")
-def trigger_nvd_sync(_: User = Depends(get_current_user)):
+def trigger_nvd_sync(_: User = Depends(require_admin)):
     return sync_once()
 
 
 @router.post("/send-digest")
-def trigger_digest(_: User = Depends(get_current_user)):
+def trigger_digest(_: User = Depends(require_admin)):
     return send_digest()
+
+
+# ---- Audit log ----
+@router.get("/audit")
+def list_audit(limit: int = 200, _: User = Depends(require_admin), db: Session = Depends(get_db)) -> list[dict]:
+    from ..models import AuditLog
+    limit = max(1, min(limit, 1000))
+    return [
+        {"id": a.id, "at": a.at, "actor": a.actor, "action": a.action, "targetType": a.target_type,
+         "targetId": a.target_id, "detail": a.detail, "ip": a.ip}
+        for a in db.scalars(select(AuditLog).order_by(AuditLog.id.desc()).limit(limit))
+    ]

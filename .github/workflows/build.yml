@@ -18,6 +18,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sign check manifest
+        # FS_SIGNING_KEY: repo secret with the Ed25519 private key from
+        # `tools/sign/sign.py keygen`. Without it the manifest is built unsigned
+        # and agents will refuse it (fine for a preview, not for production).
+        env:
+          FS_SIGNING_KEY: ${{ secrets.FS_SIGNING_KEY }}
+        run: |
+          pip install --quiet cryptography
+          if [ -n "$FS_SIGNING_KEY" ]; then
+            python tools/sign/sign.py manifest --checks-dir checks --out checks/manifest.json
+          else
+            echo "::warning::FS_SIGNING_KEY secret not set - building an UNSIGNED check manifest"
+            python tools/sign/sign.py manifest --checks-dir checks --out checks/manifest.json --unsigned
+          fi
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:

@@ -1,72 +1,15 @@
-from fastapi import APIRouter, Depends, Header, HTTPException, status
-from sqlalchemy import delete, select
+from fastapi import APIRouter, Depends, Header
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from ..deps import bearer_token
 from ..db import get_db
-from ..models import (
-    Certificate,
-    Client,
-    Collector,
-    Component,
-    EnrollmentToken,
-    License,
-    Site,
-    Snapshot,
-    naive_utc,
-    utcnow,
-)
+from ..models import Certificate, Component, License, Snapshot, naive_utc, utcnow
 from ..schemas import IngestPayload, IngestResult
-from ..security import generate_token, hash_token, slugify
 from ..services.enrichment import rematch_site
+from ..services.enrollment import enroll, resolve_agent
 
 router = APIRouter(prefix="/api", tags=["ingest"])
-
-
-def _get_or_create_site(db: Session, client: Client, name: str) -> Site:
-    slug = slugify(name)
-    site = db.scalar(select(Site).where(Site.client_id == client.id, Site.slug == slug))
-    if site is None:
-        site = Site(client_id=client.id, slug=slug, name=name)
-        db.add(site)
-        db.flush()
-    return site
-
-
-def _authenticate(db: Session, token: str, payload: IngestPayload) -> tuple[Collector, str | None]:
-    """Resolve the pushing probe.
-
-    - A known per-probe token -> that collector (scoped to its site).
-    - Otherwise a valid enrollment token -> create the site+collector under the
-      token's client, mint a permanent probe token, and return it once.
-    """
-    token_hash = hash_token(token)
-
-    collector = db.scalar(select(Collector).where(Collector.token_hash == token_hash))
-    if collector is not None:
-        return collector, None
-
-    enrollment = db.scalar(select(EnrollmentToken).where(EnrollmentToken.token_hash == token_hash))
-    if enrollment is None or not enrollment.is_valid(utcnow()):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid or expired token")
-
-    client = db.get(Client, enrollment.client_id)
-    if client is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Enrollment token's client no longer exists")
-
-    site = _get_or_create_site(db, client, payload.site)
-    probe_name = payload.probe or f"{site.slug}-collector"
-
-    collector = db.scalar(select(Collector).where(Collector.site_id == site.id, Collector.name == probe_name))
-    if collector is None:
-        collector = Collector(site_id=site.id, name=probe_name)
-        db.add(collector)
-
-    new_token = generate_token()
-    collector.token_hash = hash_token(new_token)
-    enrollment.last_used_at = utcnow()
-    db.flush()
-    return collector, new_token
 
 
 @router.post("/ingest", response_model=IngestResult)
@@ -75,7 +18,13 @@ def ingest(
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> IngestResult:
-    collector, new_token = _authenticate(db, bearer_token(authorization), payload)
+    token = bearer_token(authorization)
+    collector = resolve_agent(db, token)
+    new_token = None
+    if collector is None:
+        # Legacy PowerShell collector: enrollment on first push. The agent enrolls
+        # via /api/agent/enroll instead. Removed together with the collector.
+        collector, new_token = enroll(db, token, payload.site, payload.probe)
     site_id = collector.site_id
 
     snapshot = Snapshot(
@@ -114,6 +63,11 @@ def ingest(
 
     collector.last_seen = utcnow()
     collector.last_collector_version = payload.collectorVersion
+    if payload.diagnostics is not None:
+        collector.last_run = {
+            "at": utcnow().isoformat(),
+            "checks": [d.model_dump() for d in payload.diagnostics],
+        }
 
     db.commit()
     return IngestResult(

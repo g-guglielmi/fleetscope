@@ -3,7 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 
-# ---- Collector ingest payload (see docs/COLLECTOR_CONTRACT.md) ----
+# ---- Collector/agent ingest payload (see docs/COLLECTOR_CONTRACT.md) ----
 class ComponentIn(BaseModel):
     type: str
     hostname: str
@@ -32,6 +32,15 @@ class LicenseIn(BaseModel):
     expires: datetime | None = None
 
 
+class CheckDiagnostic(BaseModel):
+    name: str
+    version: str | None = None
+    status: str  # ok | warn | error | skipped
+    durationMs: int | None = None
+    warnings: list[str] = Field(default_factory=list)
+    error: str | None = None
+
+
 class IngestPayload(BaseModel):
     collectorVersion: str | None = None
     client: str | None = None          # informational; the token binds the client
@@ -41,6 +50,8 @@ class IngestPayload(BaseModel):
     components: list[ComponentIn] = Field(default_factory=list)
     certificates: list[CertificateIn] = Field(default_factory=list)
     licenses: list[LicenseIn] = Field(default_factory=list)
+    # Agent: per-check outcome of this collection (docs/AGENT.md §6.2)
+    diagnostics: list[CheckDiagnostic] | None = None
 
 
 class IngestResult(BaseModel):
@@ -56,6 +67,23 @@ class IngestResult(BaseModel):
     enrolled: bool = False
 
 
+# ---- Agent API (docs/AGENT.md §6.2) ----
+class EnrollRequest(BaseModel):
+    site: str = Field(min_length=1)
+    hostname: str = Field(min_length=1)
+    agentVersion: str | None = None
+    osVersion: str | None = None
+
+
+class CheckinRequest(BaseModel):
+    agentVersion: str | None = None
+    hostname: str | None = None
+    osVersion: str | None = None
+    prerequisites: dict = Field(default_factory=dict)        # {"cvad-sdk": "2402", "winrm-client": true}
+    credentialVersions: dict[str, int] = Field(default_factory=dict)
+    lastRun: dict | None = None
+
+
 # ---- Auth ----
 class LoginRequest(BaseModel):
     email: str
@@ -65,6 +93,13 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+    role: str = "admin"
+    mustChangePassword: bool = False
+
+
+class ChangePasswordRequest(BaseModel):
+    currentPassword: str
+    newPassword: str = Field(min_length=12, max_length=256)
 
 
 # ---- Read models ----

@@ -14,7 +14,6 @@ from ..models import (
     Collector,
     Finding,
     License,
-    Site,
     User,
     utcnow,
 )
@@ -23,10 +22,23 @@ from ..schemas import OverviewClient
 router = APIRouter(prefix="/api", tags=["overview"])
 
 
-def _collector_status(last_seen) -> str:
-    if last_seen is None:
+def collector_status(c: Collector) -> str:
+    """ok | stale | offline | unknown.
+
+    Agents check in every FS_AGENT_CHECKIN_SECONDS, so they are judged on that
+    cadence; the legacy collector only pushes every few hours and keeps the
+    minute-based thresholds."""
+    if c.last_checkin is not None:
+        age = utcnow() - c.last_checkin
+        period = timedelta(seconds=settings.agent_checkin_seconds)
+        if age <= period * 3:
+            return "ok"
+        if age <= period * 15:
+            return "stale"
+        return "offline"
+    if c.last_seen is None:
         return "unknown"
-    age = utcnow() - last_seen
+    age = utcnow() - c.last_seen
     if age <= timedelta(minutes=settings.collector_stale_minutes):
         return "ok"
     if age <= timedelta(minutes=settings.collector_offline_minutes):
@@ -47,10 +59,11 @@ def overview(
             list(db.scalars(select(Collector).where(Collector.site_id.in_(site_ids))))
             if site_ids else []
         )
-        last_seen = max((c.last_seen for c in collectors if c.last_seen), default=None)
+        seen = [t for c in collectors for t in (c.last_seen, c.last_checkin) if t]
+        last_seen = max(seen, default=None)
 
         # Roll each collector up to a single worst status for the client.
-        statuses = [_collector_status(c.last_seen) for c in collectors]
+        statuses = [collector_status(c) for c in collectors]
         order = {"offline": 0, "unknown": 1, "stale": 2, "ok": 3}
         status = min(statuses, key=lambda s: order[s]) if statuses else "unknown"
 

@@ -24,6 +24,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend/app ./app
 COPY backend/alembic.ini ./
 COPY backend/migrations ./migrations
+# Check modules served to agents (+ manifest.json signed in CI; see tools/sign).
+COPY checks ./checks
 # Built SPA is served from app/static (see app/main.py).
 COPY --from=frontend /ui/dist ./app/static
 

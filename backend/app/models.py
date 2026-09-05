@@ -2,10 +2,12 @@ from datetime import datetime, timezone
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -35,7 +37,10 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
-    role: Mapped[str] = mapped_column(String(32), default="admin")
+    role: Mapped[str] = mapped_column(String(32), default="admin")  # admin | viewer
+    disabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_login: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
@@ -47,6 +52,7 @@ class Client(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     sites: Mapped[list["Site"]] = relationship(back_populates="client", cascade="all, delete-orphan")
+    credentials: Mapped[list["Credential"]] = relationship(back_populates="client", cascade="all, delete-orphan")
 
 
 class Site(Base):
@@ -59,25 +65,58 @@ class Site(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     client: Mapped[Client] = relationship(back_populates="sites")
+    config: Mapped["SiteConfig | None"] = relationship(
+        back_populates="site", uselist=False, cascade="all, delete-orphan"
+    )
+
+
+class SiteConfig(Base):
+    """What an agent should collect at a site, and how. Edited in the UI, pulled
+    by the agent at every check-in. See docs/AGENT.md §6.3."""
+    __tablename__ = "site_configs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id", ondelete="CASCADE"), unique=True, index=True)
+    # {check_name: {"enabled": bool, "settings": {...}}}
+    checks: Mapped[dict] = mapped_column(JSON, default=dict)
+    interval_minutes: Mapped[int] = mapped_column(Integer, default=360)
+    auto_update: Mapped[bool] = mapped_column(Boolean, default=True)
+    # {"serviceAccount": "<credential name>"}
+    agent: Mapped[dict] = mapped_column(JSON, default=dict)
+    # {"unattended": bool, "citrixSdkSource": str|None}
+    prerequisites: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    updated_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    site: Mapped[Site] = relationship(back_populates="config")
 
 
 class Collector(Base):
-    """A probe. Enrolls with a temporary token, then gets its own permanent one."""
+    """An agent (or legacy probe). Enrolls with a temporary token, then gets its
+    own permanent one."""
     __tablename__ = "collectors"
     __table_args__ = (UniqueConstraint("site_id", "name", name="uq_collector_site_name"),)
     id: Mapped[int] = mapped_column(primary_key=True)
     site_id: Mapped[int] = mapped_column(ForeignKey("sites.id", ondelete="CASCADE"), index=True)
     name: Mapped[str] = mapped_column(String(255))
     token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
-    last_seen: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # last ingest
     last_collector_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
+    # Agent-reported state (docs/AGENT.md §4.6)
+    agent_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    os_version: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    prerequisites: Mapped[dict] = mapped_column(JSON, default=dict)          # {"cvad-sdk": "2402", "winrm-client": true, ...}
+    credential_versions: Mapped[dict] = mapped_column(JSON, default=dict)    # {name: version} held by the agent
+    last_checkin: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_run: Mapped[dict | None] = mapped_column(JSON, nullable=True)       # per-check diagnostics of the last collection
+    pending_actions: Mapped[list] = mapped_column(JSON, default=list)        # ["run-now", "restart", ...]
+
 
 class EnrollmentToken(Base):
-    """A temporary, time-boxed token bound to one client. Probes present it on
-    first push; the server then issues each probe its own permanent token.
-    Reusable within its window (to enroll several of a client's probes)."""
+    """A temporary, time-boxed token bound to one client. Agents present it on
+    enrollment; the server then issues each agent its own permanent token.
+    Reusable within its window (to enroll several of a client's agents)."""
     __tablename__ = "enrollment_tokens"
     id: Mapped[int] = mapped_column(primary_key=True)
     client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), index=True)
@@ -90,6 +129,39 @@ class EnrollmentToken(Base):
 
     def is_valid(self, now: datetime) -> bool:
         return not self.revoked and self.expires_at > now
+
+
+class Credential(Base):
+    """A client-scoped secret managed in the dashboard and delivered to the
+    client's agents that reference it by name. Encrypted with FS_SECRETS_KEY
+    (AES-256-GCM); the plaintext is never returned to UI users."""
+    __tablename__ = "credentials"
+    __table_args__ = (UniqueConstraint("client_id", "name", name="uq_credential_client_name"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16))  # device | windows
+    username: Mapped[str] = mapped_column(String(255))
+    secret_ciphertext: Mapped[bytes] = mapped_column(LargeBinary)
+    secret_nonce: Mapped[bytes] = mapped_column(LargeBinary)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+    updated_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    client: Mapped[Client] = relationship(back_populates="credentials")
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    actor: Mapped[str] = mapped_column(String(255))          # user email or "agent:<name>"
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    target_type: Mapped[str] = mapped_column(String(32))
+    target_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class Snapshot(Base):

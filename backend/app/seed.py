@@ -51,6 +51,9 @@ def run(db: Session) -> None:
             email=settings.admin_email,
             password_hash=hash_password(settings.admin_password),
             role="admin",
+            # The bootstrap password came from an env file; make the first
+            # login replace it (skipped in dev mode).
+            must_change_password=not settings.dev_mode,
         ))
 
     if db.scalar(select(func.count(Advisory.id))) == 0:

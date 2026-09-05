@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..deps import get_current_user
+from ..deps import client_ip, get_current_user, require_admin
 from ..models import (
     Advisory,
     Certificate,
@@ -15,8 +16,26 @@ from ..models import (
     Site,
     User,
 )
+from ..services.audit import audit
+from ..services.enrollment import get_or_create_site
+from ..services.siteconfig import config_dict, referenced_credentials
+from .overview import collector_status
 
 router = APIRouter(prefix="/api", tags=["clients"])
+
+
+class SiteIn(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
+def _collector_out(c: Collector) -> dict:
+    return {
+        "name": c.name, "status": collector_status(c),
+        "lastSeen": c.last_seen, "lastCheckin": c.last_checkin,
+        "version": c.last_collector_version, "agentVersion": c.agent_version, "osVersion": c.os_version,
+        "prerequisites": c.prerequisites or {}, "credentialVersions": c.credential_versions or {},
+        "lastRun": c.last_run, "pendingActions": c.pending_actions or [],
+    }
 
 
 @router.get("/clients")
@@ -25,6 +44,18 @@ def list_clients(_: User = Depends(get_current_user), db: Session = Depends(get_
         {"slug": c.slug, "name": c.name, "sites": len(c.sites)}
         for c in db.scalars(select(Client).order_by(Client.name))
     ]
+
+
+@router.post("/clients/{slug}/sites", status_code=201)
+def create_site(slug: str, body: SiteIn, request: Request, me: User = Depends(require_admin), db: Session = Depends(get_db)) -> dict:
+    """Pre-create a site so it can be configured before its agent is installed."""
+    client = db.scalar(select(Client).where(Client.slug == slug))
+    if client is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Unknown client")
+    site = get_or_create_site(db, client, body.name.strip())
+    audit(db, me.email, "site.create", "site", f"{client.slug}/{site.slug}", {"name": site.name}, client_ip(request))
+    db.commit()
+    return {"slug": site.slug, "name": site.name}
 
 
 @router.get("/clients/{slug}")
@@ -53,13 +84,16 @@ def client_detail(
             )
         )
 
+        config = config_dict(site.config)
+        enabled = [k for k, v in (config.get("checks") or {}).items() if v.get("enabled")]
         sites_out.append({
             "slug": site.slug,
             "name": site.name,
-            "collectors": [
-                {"name": c.name, "lastSeen": c.last_seen, "version": c.last_collector_version}
-                for c in collectors
-            ],
+            "configured": site.config is not None,
+            "enabledChecks": enabled,
+            "serviceAccount": (config.get("agent") or {}).get("serviceAccount"),
+            "referencedCredentials": sorted(referenced_credentials(config)),
+            "collectors": [_collector_out(c) for c in collectors],
             "components": [
                 {
                     "type": c.type, "hostname": c.hostname, "product": c.product,

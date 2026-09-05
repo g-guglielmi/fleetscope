@@ -12,8 +12,8 @@ export default function Login() {
     e.preventDefault();
     setError("");
     try {
-      await login(email, password);
-      navigate("/");
+      const me = await login(email, password);
+      navigate(me.mustChangePassword ? "/change-password" : "/");
     } catch {
       setError("Invalid credentials");
     }
@@ -24,11 +24,11 @@ export default function Login() {
       <form onSubmit={submit} className="bg-white rounded-lg shadow p-8 w-80 space-y-4">
         <h1 className="text-lg font-semibold text-slate-800">FleetScope</h1>
         <input
-          className="w-full border rounded px-3 py-2 text-sm"
+          className="w-full border rounded px-3 py-2 text-sm" autoComplete="username"
           placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)}
         />
         <input
-          className="w-full border rounded px-3 py-2 text-sm" type="password"
+          className="w-full border rounded px-3 py-2 text-sm" type="password" autoComplete="current-password"
           placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)}
         />
         {error && <p className="text-sm text-red-600">{error}</p>}
