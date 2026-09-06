@@ -26,6 +26,8 @@ COPY backend/alembic.ini ./
 COPY backend/migrations ./migrations
 # Check modules served to agents (+ manifest.json signed in CI; see tools/sign).
 COPY checks ./checks
+# Agent binary + signed release.json, produced by CI (placeholder README only in local builds).
+COPY agent-release/ ./agent/
 # Built SPA is served from app/static (see app/main.py).
 COPY --from=frontend /ui/dist ./app/static
 

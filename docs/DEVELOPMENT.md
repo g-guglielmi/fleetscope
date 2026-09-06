@@ -158,6 +158,43 @@ a NOT NULL column to an existing table, give it a `server_default` — batch mod
 recreates the table and copies the rows, which fails otherwise. Test upgrades against
 a DB that already has rows, not only against an empty one.
 
+## Agent (`agent/`, .NET 8)
+
+```bash
+dotnet test agent/FleetScope.Agent.sln -c Release          # unit tests (incl. canonical JSON vs the Python signer)
+dotnet publish agent/src/FleetScope.Agent/FleetScope.Agent.csproj -c Release -r win-x64 --self-contained \
+  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true -o publish
+```
+Needs the .NET 8 SDK (`winget install Microsoft.DotNet.SDK.8`). CI (`build.yml`, job
+`agent`) does the same on `windows-latest`, then the `build` job signs
+`agent-release/release.json` and copies exe + descriptor into the image at `/app/agent`,
+where `/api/agent/release[/download]` serve them.
+
+**Run the real agent against the dev dashboard without installing a service** — the
+agent only trusts a manifest signed with the key it pins, so give the dev server a
+signed one:
+```powershell
+# a throwaway key pair (or use tools/sign/sign.py keygen)
+$PRIV = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="; $PUB = "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg="
+Copy-Item checks\*.ps1 C:\tmp\checks\; python tools\sign\sign.py manifest --checks-dir C:\tmp\checks --out C:\tmp\checks\manifest.json --key $PRIV
+$env:FS_DEV_MODE="true"; $env:FS_CHECKS_DIR="C:\tmp\checks"; $env:FS_SIGNING_PUBKEY=$PUB; $env:FS_SECRETS_KEY="<base64 32 bytes>"; $env:FS_PUBLIC_URL="http://localhost:8000"
+uvicorn app.main:app --port 8000        # from backend/
+
+# in the UI: client, windows + device credentials, site, configuration, Install agent -> copy the token
+$env:FLEETSCOPE_DATA_DIR = "C:\tmp\agentdata"     # keep state out of ProgramData
+.\publish\FleetScopeAgent.exe install --url http://localhost:8000 --token <enrollment> --site "Bolzano-BCOM" --signing-key $PUB --insecure --no-service
+.\publish\FleetScopeAgent.exe status
+.\publish\FleetScopeAgent.exe test netscaler        # one check, nothing pushed
+.\publish\FleetScopeAgent.exe run                   # the service loop in this console (Ctrl+C to stop)
+.\publish\FleetScopeAgent.exe run-now               # from another prompt: triggers a collection within seconds
+```
+`--insecure` is what allows `http://`; never use it in production. `install` without
+`--no-service` needs an elevated prompt and performs the full service setup (§4.2 of
+AGENT.md) — that path can only be tested on a Windows Server management VM.
+
+Agent logs: `%ProgramData%\FleetScope\logs\agent-YYYYMMDD.log` (or `<data dir>\logs`),
+warnings and errors also in the Application event log (source `FleetScopeAgent`).
+
 ## Legacy PowerShell collector (`collector/`)
 Still works against `/api/ingest` (enrollment on first push) and is removed in phase 3
 of `AGENT.md`. Do not extend it.

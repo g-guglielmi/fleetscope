@@ -10,10 +10,47 @@ env:
   REGISTRY: ghcr.io
 
 jobs:
+  # ---- the Windows agent: test, then publish a self-contained single-file exe ----
+  agent:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF_NAME#v}"; else V="0.0.${GITHUB_RUN_NUMBER}"; fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "agent version $V"
+
+      - name: Test
+        run: dotnet test agent/FleetScope.Agent.sln -c Release --nologo
+
+      - name: Publish
+        run: >
+          dotnet publish agent/src/FleetScope.Agent/FleetScope.Agent.csproj -c Release -r win-x64 --self-contained
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true
+          -p:Version=${{ steps.ver.outputs.version }} -o publish
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent
+          path: publish/FleetScopeAgent.exe
+          if-no-files-found: error
+
+  # ---- the dashboard image, carrying the signed checks and the signed agent release ----
   build:
+    needs: agent
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@v4
@@ -22,20 +59,26 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Sign check manifest
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent
+          path: agent-release
+
+      - name: Sign check manifest and agent release
         # FS_SIGNING_KEY: repo secret with the Ed25519 private key from
-        # `tools/sign/sign.py keygen`. Without it the manifest is built unsigned
-        # and agents will refuse it (fine for a preview, not for production).
+        # `tools/sign/sign.py keygen`. Without it both documents are built unsigned
+        # and agents refuse them (fine for a preview, not for production).
         env:
           FS_SIGNING_KEY: ${{ secrets.FS_SIGNING_KEY }}
+          AGENT_VERSION: ${{ needs.agent.outputs.version }}
         run: |
           pip install --quiet cryptography
-          if [ -n "$FS_SIGNING_KEY" ]; then
-            python tools/sign/sign.py manifest --checks-dir checks --out checks/manifest.json
-          else
-            echo "::warning::FS_SIGNING_KEY secret not set - building an UNSIGNED check manifest"
-            python tools/sign/sign.py manifest --checks-dir checks --out checks/manifest.json --unsigned
-          fi
+          if [ -n "$FS_SIGNING_KEY" ]; then FLAG=""; else
+            echo "::warning::FS_SIGNING_KEY secret not set - building UNSIGNED manifest and release"; FLAG="--unsigned"; fi
+          python tools/sign/sign.py manifest --checks-dir checks --out checks/manifest.json $FLAG
+          python tools/sign/sign.py release --exe agent-release/FleetScopeAgent.exe --version "$AGENT_VERSION" \
+            --out agent-release/release.json --notes "commit ${GITHUB_SHA::7}" $FLAG
+          ls -la agent-release
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -61,3 +104,11 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Attach agent to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            agent-release/FleetScopeAgent.exe
+            agent-release/release.json

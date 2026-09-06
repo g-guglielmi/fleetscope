@@ -31,5 +31,12 @@ Thumbs.db
 
 # Generated in CI (signed); local dev builds an unsigned manifest at runtime
 checks/manifest.json
-# Agent binaries are built in CI, never committed
-agent-release/
+# Agent binaries are built in CI, never committed (placeholder README keeps the dir for Docker COPY)
+agent-release/*
+!agent-release/README.md
+
+# .NET
+agent/**/bin/
+agent/**/obj/
+agent/**/publish/
+*.user

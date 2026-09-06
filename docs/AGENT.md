@@ -1,6 +1,9 @@
 # FleetScope Agent — design
 
-Status: **revision 3, for review** (2026-09-06). Nothing here is built yet.
+Status: **revision 3 — phases 1 and 2 built** (2026-09-06). Phase 1 (dashboard side) and
+phase 2 (the agent MVP in `agent/`) are implemented; phases 3–4 are open. The agent's
+`install --no-service` mode (enroll only, then `run` in a console) was added during
+phase 2 for development and for environments with their own scheduler.
 Supersedes the PowerShell collector; the ingest payload contract in `COLLECTOR_CONTRACT.md`
 stays valid and is extended, not replaced.
 
@@ -366,8 +369,8 @@ Each phase leaves `main` deployable.
 
 | Phase | Scope | Verifiable by |
 |---|---|---|
-| **1 — Dashboard side** | `site_configs`, `credentials`, `audit_log`, collector/user columns + migration; bootstrap hardening; users + roles UI; credentials UI (write-only); `/api/agent/*`; `checks/` with the four ports + signed manifest (CI); ingest `diagnostics`; site config + agent panels; install-command generator | Run check scripts by hand with stdin JSON against Bolzano-BCOM (first real validation of field shapes); curl the agent endpoints; configure the site and its credential in the UI; log in as a viewer and confirm the limits |
-| **2 — Agent MVP** | `install`/`enroll`/check-in/collection/credential sync + cache/`status`/`test`/`uninstall`; signature verification; CI build with signing; no self-update yet | Install on the real management VM with the generated command; watch the site fill in; break a permission and see it in the Agent panel; rotate the NetScaler credential in the UI and see the agent pick it up |
+| **1 — Dashboard side** ✅ | `site_configs`, `credentials`, `audit_log`, collector/user columns + migration; bootstrap hardening; users + roles UI; credentials UI (write-only); `/api/agent/*`; `checks/` with the four ports + signed manifest (CI); ingest `diagnostics`; site config + agent panels; install-command generator | Done: 78-assertion API smoke, migration round-trip with existing rows, browser walk-through. Still open: hand-run of the check scripts against Bolzano-BCOM (first real validation of field shapes) |
+| **2 — Agent MVP** ✅ | `install` (service or `--no-service`)/enroll/check-in/collection/credential sync + cache/service-logon rotation/`status`/`test`/`run-now`/`uninstall`; Ed25519 verification of manifest; CI builds, tests, publishes and signs `release.json` | Done locally: 18 unit tests incl. byte-for-byte canonical JSON vs the Python signer; real binary enrolled against the dev dashboard, downloaded + verified a module, ran it, reported diagnostics; loop, `run-now` and `restart` exercised in console mode. Still open: install as a service on the real management VM (SCM/LSA paths cannot be tested on the dev box) |
 | **3 — Operations** | self-update with rollback, `run-now` end to end, per-site `autoUpdate`, Event Log, prerequisites detection + `prereqs install`, **remove the PowerShell collector** | Deploy a new image, watch the agent version change in the UI |
 | **4 — Coverage** | new checks (`hypervisor-version`, `ssl-endpoint`, …), unattended prerequisites, optional Authenticode | Add a check without touching the VM |
 
