@@ -37,6 +37,8 @@ public sealed class AgentState
     public bool RestartPending { get; set; }
 
     public string? ReleaseVersion { get; set; }
+    /// <summary>Human-readable outcome of the last self-update attempt.</summary>
+    public string? LastUpdateNote { get; set; }
     public bool ManifestValid { get; set; }
     public string? ManifestError { get; set; }
 

@@ -61,10 +61,6 @@ class IngestResult(BaseModel):
     certificates: int
     licenses: int
     findings: int
-    # Present only on the enrollment push: the probe's permanent token to save
-    # and use for all subsequent pushes. The enrollment token can then expire.
-    collectorToken: str | None = None
-    enrolled: bool = False
 
 
 # ---- Agent API (docs/AGENT.md §6.2) ----

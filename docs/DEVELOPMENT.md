@@ -78,8 +78,9 @@ curl -s localhost:8000/api/agent/checks/netscaler -H "Authorization: Bearer $AGE
 curl -s localhost:8000/api/agent/credentials/ns-bolzano -H "Authorization: Bearer $AGENT"
 ```
 
-Results still go to `POST /api/ingest` (same token), now with an optional
-`diagnostics` array (per-check status) that the site page displays.
+Results go to `POST /api/ingest` (same agent token), with an optional
+`diagnostics` array (per-check status) that the site page displays. Ingest
+accepts **only** enrolled agents — enrollment tokens and anything else get 401.
 
 `scratchpad`-style full regression: see the smoke test used during phase 1 —
 it exercises roles, credentials, config validation, enrollment idempotency,
@@ -195,6 +196,23 @@ AGENT.md) — that path can only be tested on a Windows Server management VM.
 Agent logs: `%ProgramData%\FleetScope\logs\agent-YYYYMMDD.log` (or `<data dir>\logs`),
 warnings and errors also in the Application event log (source `FleetScopeAgent`).
 
-## Legacy PowerShell collector (`collector/`)
-Still works against `/api/ingest` (enrollment on first push) and is removed in phase 3
-of `AGENT.md`. Do not extend it.
+**Self-update, tested locally**: serve a *newer* signed build and the console agent
+updates itself when these are set (both are test-only knobs):
+```powershell
+dotnet publish ... -p:Version=0.9.0 -o C:\tmp\rel     # the "release"
+python tools\sign\sign.py release --exe C:\tmp\rel\FleetScopeAgent.exe --version 0.9.0 --out C:\tmp\rel\release.json --key $PRIV
+$env:FS_AGENT_RELEASE_DIR = "C:\tmp\rel"              # backend serves it
+$env:FLEETSCOPE_UPDATE_IN_CONSOLE = "1"               # allow update outside service mode
+$env:FLEETSCOPE_CONFIRM_DEADLINE_SECONDS = "20"       # short rollback deadline
+.\FleetScopeAgent.exe run    # exits with code 3 after the swap; run again to confirm
+```
+The full lifecycle (swap → dashboard unreachable → rollback → re-update → confirm)
+is what phase 3 verified with exactly this setup.
+
+**Prerequisites**: `FleetScopeAgent.exe prereqs install --citrix-sdk-source <path>`
+installs the CVAD Broker snap-in MSI from the media you point at (ISO root, the
+`Citrix Desktop Delivery Controller` folder, or a direct `.msi`). The site config's
+`prerequisites.unattended` + `citrixSdkSource` make the service do it on its own.
+
+The legacy PowerShell collector was removed in phase 3; `/api/ingest` no longer
+enrolls anyone.

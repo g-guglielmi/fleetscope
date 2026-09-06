@@ -60,7 +60,6 @@ backend/     FastAPI app (agent API, ingest, auth/users, credentials, site confi
 frontend/    React + Vite + Tailwind UI (built into the image)
 checks/      PowerShell 5.1 check modules served to agents (manifest signed in CI)
 tools/sign/  Ed25519 key generation + manifest/release signing (used by CI)
-collector/   LEGACY PowerShell probe — superseded by the agent, removed in phase 3
 deploy/      deploy.sh (docker run, bind mounts) + deploy.env.example
 docs/        AGENT.md (design), COLLECTOR_CONTRACT.md (payload), DEVELOPMENT.md
 ```
@@ -78,11 +77,13 @@ client → its sites and credentials → configure each site → generate the ag
 command. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Status
-Phases 1 and 2 of [docs/AGENT.md](docs/AGENT.md) are built: the dashboard side
+Phases 1–3 of [docs/AGENT.md](docs/AGENT.md) are built: the dashboard side
 (users/roles, credentials, site configuration, agent API, signed check modules,
 install-command generation, audit log) and the Windows agent (`agent/`, .NET 8 single
 file: enroll, check-in, signed-module execution, credential cache, service-logon
-rotation, CLI). CI builds the agent, signs `release.json` and ships both inside the
-image. Not yet done: a service install on a real management VM, validation of the
-check modules against a live farm, self-update (phase 3), advisory curation. The
-legacy PowerShell collector still works and is removed in phase 3.
+rotation, **self-update with rollback**, CVAD SDK installation from media, CLI).
+CI builds the agent, signs `release.json` and ships both inside the image. The
+legacy PowerShell collector is gone; `/api/ingest` accepts only enrolled agents.
+Not yet done: a service install on a real management VM, validation of the check
+modules against a live farm, additional checks + Authenticode (phase 4), advisory
+curation.

@@ -47,7 +47,7 @@ public static class CommandLine
                 case "test": return await TestAsync(args);
                 case "service-account": return ServiceAccount(args);
                 case "credential": return Credential(args);
-                case "prereqs": return Prereqs(args);
+                case "prereqs": return await PrereqsAsync(args);
                 default:
                     Console.Error.WriteLine($"unknown command '{args.Command}'");
                     Console.WriteLine(Usage);
@@ -181,6 +181,9 @@ public static class CommandLine
         Console.WriteLine($"Configuring the service to run as {account}…");
         Lsa.GrantServiceLogonRight(account);
         Exec.RunOrThrow("icacls.exe", $"\"{AgentPaths.DataDir}\" /grant \"{account}:(OI)(CI)M\"", "granting the service account access to the data directory");
+        // Self-update (docs/AGENT.md §4.7) requires the service to replace its own binary;
+        // integrity comes from the Ed25519-signed release descriptor, not this ACL.
+        Exec.RunOrThrow("icacls.exe", $"\"{AgentPaths.InstallDir}\" /grant \"{account}:(OI)(CI)M\"", "granting the service account access to the agent directory (self-update)");
 
         // 7. the service
         ServiceManager.CreateOrUpdate(AgentPaths.ServiceName, AgentPaths.ServiceDisplayName, $"\"{AgentPaths.ExePath}\"", account, password);
@@ -190,8 +193,13 @@ public static class CommandLine
         state.Save();
 
         // 8. prerequisites
-        if (sdkSource is not null)
-            Console.WriteLine("NOTE: --citrix-sdk-source is accepted but prerequisite installation ships in a later version; install the CVAD SDK from the media manually for now.");
+        if (sdkSource is not null && !Prerequisites.IsMet(prerequisites, Prerequisites.CvadSdk))
+        {
+            Console.WriteLine($"Installing the CVAD PowerShell SDK from {sdkSource}…");
+            var (ok, message) = PrereqInstaller.InstallCvadSdk(sdkSource);
+            Console.WriteLine(ok ? message : $"WARNING: {message} — install it manually, or fix the path and run: prereqs install --citrix-sdk-source <path>");
+            if (ok) prerequisites = await Prerequisites.DetectAsync(ct);
+        }
 
         // 9. start
         Console.WriteLine("Starting the service…");
@@ -283,7 +291,10 @@ public static class CommandLine
         Console.WriteLine($"  Manifest:         {(state.ManifestValid ? "signed, verified" : $"REJECTED ({state.ManifestError ?? "unknown"})")}");
         Console.WriteLine($"  Service account:  {(state.ServiceAccountLocal ? "managed locally" : state.ServiceAccount is null ? "n/a" : $"{state.ServiceAccount} v{state.ServiceAccountVersion}")}{(state.RestartPending ? "  (password updated; restart pending)" : "")}");
         if (state.PendingServiceAccount is not null) Console.WriteLine($"  ! dashboard wants service account '{state.PendingServiceAccount}' — run: service-account set");
-        if (state.ReleaseVersion is not null && state.ReleaseVersion != AgentInfo.Version) Console.WriteLine($"  Release:          {state.ReleaseVersion} available (self-update not enabled in this version)");
+        if (state.LastUpdateNote is not null) Console.WriteLine($"  Update:           {state.LastUpdateNote}");
+        if (state.ReleaseVersion is not null && Service.UpdateManager.ParseVersion(state.ReleaseVersion) is { } rel
+            && Service.UpdateManager.ParseVersion(AgentInfo.Version) is { } cur && rel > cur)
+            Console.WriteLine($"  Release:          {state.ReleaseVersion} available (installs automatically while the site's auto-update is on)");
         if (state.LastRun?["checks"] is System.Text.Json.Nodes.JsonArray checks)
         {
             Console.WriteLine("  Last run:");
@@ -394,13 +405,27 @@ public static class CommandLine
         }
     }
 
-    private static int Prereqs(Args a)
+    private static async Task<int> PrereqsAsync(Args a)
     {
-        Console.WriteLine("Prerequisite installation ships in a later agent version.");
-        Console.WriteLine("Until then, install the CVAD PowerShell SDK from the CVAD product ISO on this VM:");
-        Console.WriteLine(@"  x64\Citrix Desktop Delivery Controller\Broker_PowerShellSnapIn_x64.msi   (match the site's version)");
-        Console.WriteLine("The separately downloadable \"Remote PowerShell SDK\" is the Citrix Cloud variant and does not apply.");
-        return 0;
+        if (a.Positional.FirstOrDefault() != "install")
+            throw new ArgumentException("usage: prereqs install --citrix-sdk-source <path>");
+        var source = a.Get("citrix-sdk-source");
+        if (source is null)
+        {
+            Console.WriteLine("Point --citrix-sdk-source at the CVAD product ISO (or its 'Citrix Desktop Delivery Controller' folder, or a .msi):");
+            Console.WriteLine(@"  prereqs install --citrix-sdk-source ""\\fs01\sw\CVAD_2402""");
+            Console.WriteLine("Match the SDK to the site's CVAD version. The separately downloadable \"Remote PowerShell SDK\" is the Citrix Cloud variant and does not apply.");
+            return 2;
+        }
+        RequireAdmin();
+        Console.WriteLine($"Installing the CVAD PowerShell SDK from {source}…");
+        var (ok, message) = PrereqInstaller.InstallCvadSdk(source);
+        Console.WriteLine(ok ? message : $"error: {message}");
+        var prerequisites = await Prerequisites.DetectAsync(CancellationToken.None);
+        Console.WriteLine("Prerequisites now:");
+        foreach (var kv in prerequisites)
+            Console.WriteLine($"  {(kv.Value is null or false ? "[ ]" : "[x]")} {Prerequisites.Describe(kv.Key)}{(kv.Value is string s ? $"  ({s})" : "")}");
+        return ok ? 0 : 1;
     }
 
     // ------------------------------------------------------------------ helpers

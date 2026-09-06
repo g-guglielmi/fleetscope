@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using FleetScope.Agent.Api;
 using FleetScope.Agent.Checks;
 using FleetScope.Agent.Security;
@@ -9,13 +10,19 @@ namespace FleetScope.Agent.Service;
 
 /// <summary>
 /// The service loop (docs/AGENT.md §4.6): check in every few minutes, keep the
-/// credential cache and the service logon in sync, and run a collection when it
-/// is due or requested.
+/// credential cache, the service logon and the binary itself in sync with the
+/// dashboard, and run a collection when it is due or requested.
 /// </summary>
 public sealed class AgentWorker : BackgroundService
 {
     private static readonly TimeSpan PrerequisiteRefresh = TimeSpan.FromMinutes(30);
     private readonly ILogger<AgentWorker> _log;
+
+    private readonly DateTimeOffset _startedAt = DateTimeOffset.UtcNow;
+    private bool _awaitingUpdateConfirm;
+    private bool _logonUpdateFailed;
+    private bool _prereqInstallAttempted;
+    private string? _lastUpdateReason;
 
     public AgentWorker(ILogger<AgentWorker> log) => _log = log;
 
@@ -40,6 +47,8 @@ public sealed class AgentWorker : BackgroundService
         _log.LogInformation("FleetScope Agent {Version} starting (data dir {Dir})", AgentInfo.Version, AgentPaths.DataDir);
 
         var state = AgentState.Load();
+        HandleUpdateMarker(state);
+
         var token = ReadToken();
         if (!state.IsEnrolled || token is null)
         {
@@ -89,6 +98,8 @@ public sealed class AgentWorker : BackgroundService
                 if (checkin.Site is not null) { state.SiteSlug = checkin.Site.Slug; state.SiteName = checkin.Site.Name; }
                 state.ReleaseVersion = checkin.Release?["version"]?.GetValue<string>();
 
+                ConfirmUpdateIfPending(state);
+
                 if (checkin.Manifest is null)
                     (state.ManifestValid, state.ManifestError) = (false, "no manifest served");
                 else if (Signing.VerifyDocument(checkin.Manifest, state.SigningKey, out var reason))
@@ -102,6 +113,13 @@ public sealed class AgentWorker : BackgroundService
 
                 await credentials.SyncAsync(api, checkin.Credentials, _log, ct);
                 ApplyServiceAccount(state, checkin, credentials);
+                await MaybeInstallPrerequisitesAsync(checkin, prerequisites, ct);
+
+                if (await MaybeUpdateAsync(api, state, checkin, ct))
+                {
+                    await Task.Delay(500, CancellationToken.None);
+                    Environment.Exit(UpdateManager.RestartExitCode);
+                }
 
                 var runNow = checkin.Actions.Contains("run-now") || ConsumeRunNowFlag();
                 restartRequested = checkin.Actions.Contains("restart");
@@ -133,32 +151,160 @@ public sealed class AgentWorker : BackgroundService
                 _log.LogError("the dashboard rejected this agent's token (401). It may have been revoked — re-run install with a new enrollment token.");
                 state.LastCheckinError = "401 unauthorized";
                 TrySave(state);
+                MaybeRollback(state);
             }
             catch (Exception ex)
             {
                 _log.LogError(ex, "check-in cycle failed");
                 state.LastCheckinError = ex.Message;
                 TrySave(state);
+                MaybeRollback(state);
             }
 
             if (restartRequested)
             {
                 _log.LogWarning("restart requested from the dashboard; exiting so the service recovery policy restarts the agent");
                 await Task.Delay(500, CancellationToken.None);
-                Environment.Exit(3);
+                Environment.Exit(UpdateManager.RestartExitCode);
             }
 
             await SleepAsync(TimeSpan.FromSeconds(state.CheckinSeconds), ct);
         }
     }
 
+    // ------------------------------------------------------------------ self-update
+
+    /// <summary>On startup: are we a freshly swapped-in binary, or the survivor of a rollback?</summary>
+    private void HandleUpdateMarker(AgentState state)
+    {
+        var marker = UpdateManager.LoadMarker();
+        if (marker is null)
+        {
+            // No update in flight: stray leftovers are from a confirmed update whose delete raced a lock.
+            if (File.Exists(UpdateManager.OldPath) || File.Exists(UpdateManager.FailedPath))
+                UpdateManager.Cleanup();
+            return;
+        }
+        if (marker.ToVersion == AgentInfo.Version)
+        {
+            _awaitingUpdateConfirm = true;
+            _log.LogInformation("running freshly updated {Version} (from {From}); confirming after the first successful check-in", AgentInfo.Version, marker.FromVersion);
+            return;
+        }
+        // We are not the version the update aimed for: it was rolled back, or the new binary never ran.
+        _log.LogError("update to {To} did not take effect; running {Current} again", marker.ToVersion, AgentInfo.Version);
+        state.LastUpdateNote = $"update to {marker.ToVersion} failed and was rolled back at {DateTimeOffset.UtcNow:u}";
+        UpdateManager.Cleanup();
+        TrySave(state);
+    }
+
+    private void ConfirmUpdateIfPending(AgentState state)
+    {
+        if (!_awaitingUpdateConfirm) return;
+        _awaitingUpdateConfirm = false;
+        UpdateManager.Cleanup();
+        state.LastUpdateNote = $"updated to {AgentInfo.Version} at {DateTimeOffset.UtcNow:u}";
+        _log.LogInformation("update to {Version} confirmed", AgentInfo.Version);
+    }
+
+    /// <summary>An unconfirmed update whose check-ins keep failing is rolled back after the deadline.</summary>
+    private void MaybeRollback(AgentState state)
+    {
+        if (!_awaitingUpdateConfirm || DateTimeOffset.UtcNow - _startedAt < UpdateManager.ConfirmDeadline) return;
+        _log.LogCritical("no successful check-in within {Minutes} minutes of updating to {Version}; rolling back to the previous binary",
+            UpdateManager.ConfirmDeadline.TotalMinutes, AgentInfo.Version);
+        try
+        {
+            if (UpdateManager.RollbackToOld(AgentPaths.ExePath))
+            {
+                // Marker stays: the restored binary logs the failure and cleans up.
+                Environment.Exit(UpdateManager.RestartExitCode);
+            }
+            _log.LogError("rollback impossible: the previous binary is gone; continuing on {Version}", AgentInfo.Version);
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "rollback failed; continuing on {Version}", AgentInfo.Version);
+        }
+        _awaitingUpdateConfirm = false;
+        UpdateManager.DeleteMarker();
+        state.LastUpdateNote = $"update to {AgentInfo.Version} unconfirmed and rollback impossible at {DateTimeOffset.UtcNow:u}";
+        TrySave(state);
+    }
+
+    /// <summary>Returns true when the binary was swapped and the process must exit for restart.</summary>
+    private async Task<bool> MaybeUpdateAsync(DashboardClient api, AgentState state, CheckinResponse checkin, CancellationToken ct)
+    {
+        if (_awaitingUpdateConfirm) return false;  // never chain updates before confirming the last one
+        // Console (`--no-service`) agents have no SCM to restart them; opt-in for tests.
+        if (state.NoService && !EnvTruthy("FLEETSCOPE_UPDATE_IN_CONSOLE")) return false;
+
+        var processPath = Environment.ProcessPath ?? "";
+        var fromInstallDir = processPath.Length > 0 &&
+            string.Equals(Path.GetFullPath(processPath), Path.GetFullPath(AgentPaths.ExePath), StringComparison.OrdinalIgnoreCase);
+
+        var (go, reason) = UpdateManager.Decide(checkin.Release, state.SigningKey, AgentInfo.Version, checkin.Config.AutoUpdate, fromInstallDir);
+        if (!go)
+        {
+            if (reason is not ("up to date" or "no release published") && reason != _lastUpdateReason)
+            {
+                _log.LogWarning("{Reason}", reason);
+                _lastUpdateReason = reason;
+            }
+            return false;
+        }
+
+        _log.LogInformation("{Reason}", reason);
+        try
+        {
+            await UpdateManager.ApplyAsync(api, checkin.Release!, _log, ct);
+            state.LastUpdateNote = $"updating to {state.ReleaseVersion} at {DateTimeOffset.UtcNow:u}";
+            state.Save();
+            return true;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "self-update failed; staying on {Version}", AgentInfo.Version);
+            state.LastUpdateNote = $"update to {state.ReleaseVersion} failed at {DateTimeOffset.UtcNow:u}: {ex.Message}";
+            return false;
+        }
+    }
+
+    private static bool EnvTruthy(string name)
+        => Environment.GetEnvironmentVariable(name) is "1" or "true" or "TRUE" or "True";
+
+    // ------------------------------------------------------------------ prerequisites (unattended)
+
+    /// <summary>docs/AGENT.md §4.8: install the CVAD SDK from configured media when the site opts in.</summary>
+    private async Task MaybeInstallPrerequisitesAsync(CheckinResponse checkin, Dictionary<string, object?> prerequisites, CancellationToken ct)
+    {
+        if (_prereqInstallAttempted) return;
+        var cfg = checkin.Config.Prerequisites;
+        if (cfg?["unattended"]?.GetValue<bool>() != true) return;
+        var source = cfg["citrixSdkSource"]?.GetValue<string>();
+        if (string.IsNullOrWhiteSpace(source)) return;
+        if (Prerequisites.IsMet(prerequisites, Prerequisites.CvadSdk)) return;
+
+        _prereqInstallAttempted = true;  // once per process; a restart retries
+        _log.LogWarning("attempting unattended CVAD SDK install from {Source}", source);
+        var (ok, message) = PrereqInstaller.InstallCvadSdk(source);
+        _log.Log(ok ? LogLevel.Information : LogLevel.Error, "unattended CVAD SDK install: {Message}", message);
+        if (ok)
+        {
+            var refreshed = await Prerequisites.DetectAsync(ct);
+            prerequisites.Clear();
+            foreach (var kv in refreshed) prerequisites[kv.Key] = kv.Value;
+        }
+    }
+
+    // ------------------------------------------------------------------ service account
+
     /// <summary>
     /// Keeps the Windows service logon in sync with the dashboard-managed service
     /// account (docs/AGENT.md §4.4): a new password version is written to the SCM
     /// without restarting; a different account needs an elevated local change.
     /// </summary>
-    private bool _logonUpdateFailed;
-
     private void ApplyServiceAccount(AgentState state, CheckinResponse checkin, CredentialCache credentials)
     {
         if (state.ServiceAccountLocal || state.NoService) return;
@@ -199,6 +345,8 @@ public sealed class AgentWorker : BackgroundService
             _logonUpdateFailed = true;
         }
     }
+
+    // ------------------------------------------------------------------ misc
 
     private static string? ReadToken()
     {

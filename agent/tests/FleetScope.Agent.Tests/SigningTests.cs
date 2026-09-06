@@ -43,6 +43,13 @@ public class SigningTests
     }
 
     [Fact]
+    public void VerifiesPythonSignedRelease()
+    {
+        var release = (JsonObject)Vector["signedRelease"]!.DeepClone();
+        Assert.True(Signing.VerifyDocument(release, Pub, out var reason), reason);
+    }
+
+    [Fact]
     public void RejectsTamperedManifest()
     {
         var manifest = (JsonObject)Vector["signedManifest"]!.DeepClone();

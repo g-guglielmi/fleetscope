@@ -1,13 +1,12 @@
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends
 from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
-from ..deps import bearer_token
 from ..db import get_db
-from ..models import Certificate, Component, License, Snapshot, naive_utc, utcnow
+from ..deps import get_agent
+from ..models import Certificate, Collector, Component, License, Snapshot, naive_utc, utcnow
 from ..schemas import IngestPayload, IngestResult
 from ..services.enrichment import rematch_site
-from ..services.enrollment import enroll, resolve_agent
 
 router = APIRouter(prefix="/api", tags=["ingest"])
 
@@ -15,16 +14,10 @@ router = APIRouter(prefix="/api", tags=["ingest"])
 @router.post("/ingest", response_model=IngestResult)
 def ingest(
     payload: IngestPayload,
-    authorization: str | None = Header(default=None),
+    collector: Collector = Depends(get_agent),
     db: Session = Depends(get_db),
 ) -> IngestResult:
-    token = bearer_token(authorization)
-    collector = resolve_agent(db, token)
-    new_token = None
-    if collector is None:
-        # Legacy PowerShell collector: enrollment on first push. The agent enrolls
-        # via /api/agent/enroll instead. Removed together with the collector.
-        collector, new_token = enroll(db, token, payload.site, payload.probe)
+    """Collection results from an enrolled agent (enrollment is /api/agent/enroll)."""
     site_id = collector.site_id
 
     snapshot = Snapshot(
@@ -76,6 +69,4 @@ def ingest(
         certificates=len(payload.certificates),
         licenses=len(payload.licenses),
         findings=findings,
-        collectorToken=new_token,
-        enrolled=new_token is not None,
     )

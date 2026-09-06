@@ -1,23 +1,20 @@
-# Collector → API JSON contract (v1)
+# Agent → API ingest contract (v1)
 
-Probes `POST /api/ingest` with header `Authorization: Bearer <token>`. On the first
-push the token is the **enrollment token** generated in the dashboard when the
-client was created; the response then carries `collectorToken`, the probe's
-**permanent per-probe token**, which the probe saves and uses for every later push.
-The client is bound by the enrollment token (the `client` field below is
-informational); the `site` is auto-created under that client from its name.
+Agents `POST /api/ingest` with `Authorization: Bearer <agent token>` — the permanent
+per-agent token issued by `POST /api/agent/enroll` (see `AGENT.md` §6.2). Any other
+token is rejected with 401; there is no enrollment-on-push.
 
 ```jsonc
 {
-  "collectorVersion": "1.0.0",
-  "client": "ACME Corp",             // display name; slug auto-derived (acme-corp)
-  "site": "Milan DC1",               // display name; slug auto-derived (milan-dc1)
-  "probe": "DDC01",                  // probe identity (e.g. hostname); optional
-  "collectedAt": "2026-09-03T10:00:00Z",
+  "collectorVersion": "0.4.0",       // agent version
+  "client": "ACME Corp",             // informational; the token binds client + site
+  "site": "Milan DC1",               // display name (informational for enrolled agents)
+  "probe": "MGMT01",                 // agent identity (hostname)
+  "collectedAt": "2026-09-06T10:00:00Z",
 
   "components": [
     {
-      "type": "delivery-controller", // controller|vda|storefront|netscaler|license-server|hypervisor
+      "type": "controller",          // controller|vda|storefront|netscaler|license-server|hypervisor
       "hostname": "DDC01",
       "product": "Citrix Virtual Apps and Desktops",
       "version": "2402",
@@ -47,17 +44,25 @@ informational); the `site` is auto-created under that client from its name.
       "subscriptionAdvantageDate": "2026-08-31T00:00:00Z",
       "expires": null                // null = permanent; ISO date = expiring
     }
+  ],
+
+  "diagnostics": [                   // optional: per-check outcome of this collection
+    { "name": "netscaler", "version": "1.0.0", "status": "ok", "durationMs": 1480,
+      "warnings": [], "error": null }
+    // status: ok | warn | error | skipped
   ]
 }
 ```
 
 ### Rules
 - All timestamps ISO-8601 UTC (stored as naive UTC server-side).
-- `site` is required; `client` is informational (the token binds the client).
-- The enrollment token is temporary and time-boxed; the per-probe token it yields
-  is scoped to that one probe's site. A leaked probe config exposes only that probe.
 - On each successful ingest the server: stores the raw payload as a `snapshot`,
   **replaces** the site's derived `components` / `certificates` / `licenses` with
-  this payload (latest-wins), updates the collector's `last_seen`, and re-runs
-  advisory matching to refresh `findings`.
+  this payload (latest-wins), updates the collector's `last_seen` and `last_run`
+  (from `diagnostics`), and re-runs advisory matching to refresh `findings`.
+- Because ingest is latest-wins, the agent does **not** push when every check
+  failed or was skipped — diagnostics then travel with the next check-in instead,
+  so a broken run never wipes a site's inventory.
 - Component `type` is an open enum; unknown types are stored but not matched.
+- A leaked agent token exposes only that agent's site: its push rights and the
+  credentials its site config references.

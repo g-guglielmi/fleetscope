@@ -14,7 +14,6 @@ dist/
 # Env / secrets
 .env
 *.local
-collector/config.json
 deploy/*.env
 
 # OS / editor

@@ -1,6 +1,6 @@
 """Agent identity: resolve a permanent agent token, or enroll with a temporary
-enrollment token (docs/AGENT.md §6.2). Shared by /api/agent/enroll and, until
-the PowerShell collector is retired, by /api/ingest."""
+enrollment token (docs/AGENT.md §6.2). Enrollment happens only via
+/api/agent/enroll; /api/ingest requires an already-enrolled agent."""
 
 from fastapi import HTTPException, status
 from sqlalchemy import select

@@ -26,7 +26,7 @@ def _actor(collector: Collector) -> str:
     return f"agent:{collector.name}"
 
 
-@router.post("/enroll", status_code=201)
+@router.post("/enroll", status_code=201)  # the only enrollment path; ingest requires an enrolled agent
 def agent_enroll(
     body: EnrollRequest,
     request: Request,

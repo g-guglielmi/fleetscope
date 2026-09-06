@@ -14,6 +14,8 @@ public static class Program
     {
         var dataDir = Environment.GetEnvironmentVariable("FLEETSCOPE_DATA_DIR");
         if (!string.IsNullOrWhiteSpace(dataDir)) AgentPaths.DataDir = dataDir;
+        var installDir = Environment.GetEnvironmentVariable("FLEETSCOPE_INSTALL_DIR");
+        if (!string.IsNullOrWhiteSpace(installDir)) AgentPaths.InstallDir = installDir;
 
         // No arguments under the SCM = run as the service. `run` = same loop in a console (debugging).
         if (WindowsServiceHelpers.IsWindowsService() || (args.Length == 1 && args[0].Equals("run", StringComparison.OrdinalIgnoreCase)))

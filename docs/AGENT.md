@@ -1,9 +1,11 @@
 # FleetScope Agent — design
 
-Status: **revision 3 — phases 1 and 2 built** (2026-09-06). Phase 1 (dashboard side) and
-phase 2 (the agent MVP in `agent/`) are implemented; phases 3–4 are open. The agent's
-`install --no-service` mode (enroll only, then `run` in a console) was added during
-phase 2 for development and for environments with their own scheduler.
+Status: **revision 3 — phases 1–3 built** (2026-09-06). Phase 1 (dashboard side),
+phase 2 (the agent MVP in `agent/`) and phase 3 (self-update with rollback, CVAD SDK
+installation, PowerShell collector removed) are implemented; phase 4 is open. Added
+during implementation: the agent's `install --no-service` mode (enroll only, then
+`run` in a console) for development and environments with their own scheduler, and
+the install-dir ACL note in §4.7.
 Supersedes the PowerShell collector; the ingest payload contract in `COLLECTOR_CONTRACT.md`
 stays valid and is extended, not replaced.
 
@@ -177,7 +179,15 @@ The signed `release.json` names the current version and SHA-256. If newer than r
 1. Download to `updates\FleetScopeAgent.<ver>.exe`, verify SHA-256 against the signed descriptor.
 2. Rename the running binary to `FleetScopeAgent.exe.old` (Windows allows renaming a running exe), move the new one into place.
 3. Exit with a distinct code; the service recovery policy restarts it → the new version starts, deletes `.old`, reports its version at the next check-in.
-4. If the new binary fails to check in within 10 minutes, it swaps `.old` back (rollback) and reports the failure.
+4. If the new binary fails to check in within 10 minutes, it swaps `.old` back (rollback) and exits for restart; the restored binary logs the failure, cleans up, and reports it in `status` and at its next check-in.
+
+Note on §7.3: self-update requires the service to replace its own binary, so the
+installer grants the service account Modify on the agent's install directory (only
+there). Integrity is enforced by the Ed25519-signed release descriptor and its
+SHA-256 — verified before the swap — not by the ACL. A new binary is *confirmed*
+only by a successful check-in; until then the previous one is kept for rollback.
+An update whose new binary crashes before reaching our code exhausts the capped
+recovery policy and the agent shows offline — the one case needing manual recovery.
 
 ### 4.8 Prerequisites
 
@@ -346,7 +356,7 @@ The site's service account must be configured in the UI **before** install (the 
 
 **Uninstall**: `FleetScopeAgent.exe uninstall --purge`.
 
-**PowerShell collector**: removed (`collector/`, `Install-Collector.ps1`, enrollment-on-ingest) in phase 3. No site has completed a deployment with it, so there is nothing to migrate; the one partially set-up site is re-done with the agent.
+**PowerShell collector**: removed in phase 3 (`collector/`, enrollment-on-ingest, the `collectorToken` ingest fields). `/api/ingest` accepts only enrolled agents. Nothing had completed a deployment with it, so nothing was migrated.
 
 ## 9. Repository layout and CI
 
@@ -371,7 +381,7 @@ Each phase leaves `main` deployable.
 |---|---|---|
 | **1 — Dashboard side** ✅ | `site_configs`, `credentials`, `audit_log`, collector/user columns + migration; bootstrap hardening; users + roles UI; credentials UI (write-only); `/api/agent/*`; `checks/` with the four ports + signed manifest (CI); ingest `diagnostics`; site config + agent panels; install-command generator | Done: 78-assertion API smoke, migration round-trip with existing rows, browser walk-through. Still open: hand-run of the check scripts against Bolzano-BCOM (first real validation of field shapes) |
 | **2 — Agent MVP** ✅ | `install` (service or `--no-service`)/enroll/check-in/collection/credential sync + cache/service-logon rotation/`status`/`test`/`run-now`/`uninstall`; Ed25519 verification of manifest; CI builds, tests, publishes and signs `release.json` | Done locally: 18 unit tests incl. byte-for-byte canonical JSON vs the Python signer; real binary enrolled against the dev dashboard, downloaded + verified a module, ran it, reported diagnostics; loop, `run-now` and `restart` exercised in console mode. Still open: install as a service on the real management VM (SCM/LSA paths cannot be tested on the dev box) |
-| **3 — Operations** | self-update with rollback, `run-now` end to end, per-site `autoUpdate`, Event Log, prerequisites detection + `prereqs install`, **remove the PowerShell collector** | Deploy a new image, watch the agent version change in the UI |
+| **3 — Operations** ✅ | self-update with rollback, per-site `autoUpdate`, prerequisites installation (`prereqs install`, `install --citrix-sdk-source`, unattended), **PowerShell collector removed** (ingest = enrolled agents only) | Done locally: the full update lifecycle (swap → dashboard unreachable → rollback after deadline → recovery logging → re-update → confirm + cleanup) exercised with two real published builds against the dev dashboard; ingest 401s verified. Still open: watching a version change through a real image deploy |
 | **4 — Coverage** | new checks (`hypervisor-version`, `ssl-endpoint`, …), unattended prerequisites, optional Authenticode | Add a check without touching the VM |
 
 Rough weight: phase 1 ≈ two long sessions (users, credentials and signing added to it), phase 2 ≈ two to three (the agent is the new code), phases 3–4 incremental.
