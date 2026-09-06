@@ -2,7 +2,8 @@
   <PropertyGroup>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <LangVersion>latest</LangVersion>
+    <!-- Pinned so local and CI builds agree regardless of SDK patch level. -->
+    <LangVersion>12</LangVersion>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <!-- Windows-only APIs are intentional: the agent targets Windows management VMs. -->
     <NoWarn>$(NoWarn);CA1416</NoWarn>

@@ -113,7 +113,9 @@ public sealed class CheckRunner
         {
             try { if (JsonNode.Parse(stdout[first..].Trim()) is JsonObject o) return o; } catch { }
         }
-        foreach (var line in stdout.Split('\n').Reverse())
+        // Enumerable.Reverse spelled out: on newer compilers array.Reverse() binds to the
+        // void MemoryExtensions.Reverse(Span<T>) overload instead.
+        foreach (var line in Enumerable.Reverse(stdout.Split('\n')))
         {
             var t = line.Trim();
             if (!t.StartsWith('{')) continue;
