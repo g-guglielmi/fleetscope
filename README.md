@@ -89,7 +89,7 @@ modules against a live farm, additional checks + Authenticode (phase 4), advisor
 curation.
 
 ## License
-Copyright (c) 2026 Gianluca Guglielmi.
+Copyright (c) 2026 g-guglielmi.
 
 FleetScope is licensed under the **GNU Affero General Public License v3.0** — see
 [LICENSE](LICENSE). The AGPL's network clause (§13) applies: if you run a modified
