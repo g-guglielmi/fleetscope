@@ -1,5 +1,17 @@
 import { useState } from "react";
 
+// FleetScope is AGPL-3.0; the network-use clause (§13) means viewers must be able
+// to reach the source. Surfaced in the app footer and on the login page.
+export const REPO_URL = "https://github.com/g-guglielmi/fleetscope";
+
+export function SourceLink({ className = "" }: { className?: string }) {
+  return (
+    <a href={REPO_URL} target="_blank" rel="noreferrer" className={className}>
+      Source code (AGPL-3.0)
+    </a>
+  );
+}
+
 export const STATUS_STYLES: Record<string, string> = {
   ok: "bg-green-100 text-green-700",
   stale: "bg-amber-100 text-amber-700",

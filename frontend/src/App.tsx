@@ -1,5 +1,6 @@
 import { Navigate, NavLink, Route, Routes, Link, useLocation } from "react-router-dom";
 import { getToken, getMe, clearToken, isAdmin } from "./api";
+import { SourceLink } from "./components";
 import Login from "./pages/Login";
 import ChangePassword from "./pages/ChangePassword";
 import Overview from "./pages/Overview";
@@ -25,7 +26,7 @@ function Shell({ children }: { children: JSX.Element }) {
   const link = ({ isActive }: { isActive: boolean }) =>
     `text-sm px-2 py-1 rounded ${isActive ? "bg-slate-700 text-white" : "text-slate-300 hover:text-white"}`;
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-800">
+    <div className="min-h-screen flex flex-col bg-slate-100 text-slate-800">
       <header className="bg-slate-900 text-white px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-4">
           <Link to="/" className="font-semibold tracking-tight">FleetScope</Link>
@@ -46,7 +47,10 @@ function Shell({ children }: { children: JSX.Element }) {
           </button>
         </div>
       </header>
-      <main className="p-6 max-w-6xl mx-auto">{children}</main>
+      <main className="flex-1 p-6 max-w-6xl mx-auto w-full">{children}</main>
+      <footer className="px-6 py-3 text-xs text-slate-500 flex justify-center">
+        <SourceLink className="hover:text-slate-800 underline" />
+      </footer>
     </div>
   );
 }

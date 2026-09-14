@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { login } from "../api";
+import { SourceLink } from "../components";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -35,6 +36,9 @@ export default function Login() {
         <button className="w-full bg-slate-900 text-white rounded py-2 text-sm hover:bg-slate-700">
           Sign in
         </button>
+        <p className="text-center text-xs text-slate-400 pt-2">
+          <SourceLink className="hover:text-slate-600 underline" />
+        </p>
       </form>
     </div>
   );
