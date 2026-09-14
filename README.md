@@ -87,3 +87,11 @@ legacy PowerShell collector is gone; `/api/ingest` accepts only enrolled agents.
 Not yet done: a service install on a real management VM, validation of the check
 modules against a live farm, additional checks + Authenticode (phase 4), advisory
 curation.
+
+## License
+Copyright (c) 2026 Gianluca Guglielmi.
+
+FleetScope is licensed under the **GNU Affero General Public License v3.0** — see
+[LICENSE](LICENSE). The AGPL's network clause (§13) applies: if you run a modified
+FleetScope as a network service, you must offer its complete source to the users who
+interact with it over the network.
